@@ -1,42 +1,342 @@
 //! The IP Connection manages the communication between the API bindings and the Brick Daemon or a WIFI/Ethernet Extension.
-use std::{
-    collections::HashMap,
-    error::Error,
-    io::{Read, Write},
-    net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs},
-    str,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        mpsc::{Receiver, Sender, *},
-        Arc,
-    },
-    thread::{self, JoinHandle},
-    time::Duration,
-};
+use std::io::Write;
+use std::str;
 
-use crate::{byte_converter::*, converting_callback_receiver::*, converting_receiver::*};
+use crate::byte_converter::{FromByteSlice, ToBytes};
 
-use hmac::{Hmac, Mac, NewMac};
-use rand::{RngCore, SeedableRng};
-use rand_chacha::ChaChaRng;
+pub mod async_io {
+    use std::ops::{Deref, DerefMut};
+    use std::time::Duration;
+    use std::{borrow::BorrowMut, sync::Arc};
 
-use sha1::Sha1;
+    use log::warn;
+    use tokio::{
+        io::{self, AsyncReadExt, AsyncWriteExt, WriteHalf},
+        net::{TcpStream, ToSocketAddrs},
+        sync::{
+            broadcast::{self, Receiver},
+            Mutex,
+        },
+        task::JoinHandle,
+    };
+    use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
+    use tokio_stream::{wrappers::BroadcastStream, Stream, StreamExt};
 
-/// The IP Connection manages the communication between the API bindings and the Brick Daemon or a WIFI/Ethernet Extension.
-/// Before Bricks and Bricklets can be controlled using their API an IP Connection has to be created and its TCP/IP connection has to be established.
-#[derive(Debug)]
-pub struct IpConnection {
-    pub(crate) req: IpConnectionRequestSender,
-    //pub(crate) socket_thread_tx: Sender<SocketThreadRequest>,
-    socket_thread: Option<JoinHandle<()>>,
-}
+    use crate::{
+        byte_converter::{FromByteSlice, ToBytes},
+        error::TinkerforgeError,
+        ip_connection::{EnumerateResponse, PacketHeader},
+    };
 
-/// The IP connection request sender is a cloneable object created by a IP connection. The sender can send requests to connected devices
-/// and can be shared across threads by cloning.
-#[derive(Debug, Clone)]
-pub struct IpConnectionRequestSender {
-    pub(crate) socket_thread_tx: Sender<SocketThreadRequest>,
-    connection_state: Arc<AtomicUsize>
+    #[derive(Debug, Clone)]
+    pub struct AsyncIpConnection {
+        inner: Arc<Mutex<InnerAsyncIpConnection>>,
+    }
+
+    impl AsyncIpConnection {
+        pub async fn enumerate(
+            &mut self,
+        ) -> Result<Box<dyn Stream<Item = EnumerateResponse> + Unpin + Send>, TinkerforgeError>
+        {
+            self.inner.borrow_mut().lock().await.enumerate().await
+        }
+        pub(crate) async fn set(
+            &mut self,
+            uid: u32,
+            function_id: u8,
+            payload: &[u8],
+            timeout: Option<Duration>,
+        ) -> Result<Option<PacketData>, TinkerforgeError> {
+            self.inner
+                .borrow_mut()
+                .lock()
+                .await
+                .set(uid, function_id, payload, timeout)
+                .await
+        }
+        pub(crate) async fn get(
+            &mut self,
+            uid: u32,
+            function_id: u8,
+            payload: &[u8],
+            timeout: Duration,
+        ) -> Result<PacketData, TinkerforgeError> {
+            self.inner
+                .borrow_mut()
+                .lock()
+                .await
+                .get(uid, function_id, payload, timeout)
+                .await
+        }
+        pub(crate) async fn callback_stream(
+            &mut self,
+            uid: u32,
+            function_id: u8,
+        ) -> impl Stream<Item = PacketData> {
+            self.inner
+                .borrow_mut()
+                .lock()
+                .await
+                .callback_stream(uid, function_id)
+                .await
+        }
+    }
+
+    impl AsyncIpConnection {
+        pub async fn new<T: ToSocketAddrs>(addr: T) -> Result<Self, TinkerforgeError> {
+            Ok(Self {
+                inner: Arc::new(Mutex::new(InnerAsyncIpConnection::new(addr).await?)),
+            })
+        }
+    }
+
+    #[derive(Debug)]
+    struct InnerAsyncIpConnection {
+        write_stream: WriteHalf<TcpStream>,
+        receiver: Receiver<PacketData>,
+        thread: JoinHandle<()>,
+        seq_num: u8,
+    }
+
+    impl InnerAsyncIpConnection {
+        pub async fn new<T: ToSocketAddrs>(addr: T) -> Result<Self, TinkerforgeError> {
+            let socket = TcpStream::connect(addr).await?;
+            let (mut rd, write_stream) = io::split(socket);
+            let (enum_tx, receiver) = broadcast::channel(16);
+            let thread = tokio::spawn(async move {
+                loop {
+                    let mut header_buffer = Box::new([0; PacketHeader::SIZE]);
+                    match rd.read_exact(header_buffer.deref_mut()).await {
+                        Ok(8) => {}
+                        Ok(n) => panic!("Unexpected read count: {n}"),
+                        Err(e) => panic!("Error from socket: {e}"),
+                    };
+                    let header = PacketHeader::from_le_byte_slice(header_buffer.deref());
+                    let body_size = header.length as usize - PacketHeader::SIZE;
+                    let mut body = vec![0; body_size].into_boxed_slice();
+                    match rd.read_exact(body.deref_mut()).await {
+                        Ok(l) if l == body_size => {}
+                        Ok(l) => {
+                            panic!("Unexpected body size: {l}")
+                        }
+                        Err(e) => panic!("Error from socket: {e}"),
+                    }
+                    //println!("Header: {header:?}");
+                    let packet_data = PacketData { header, body };
+                    enum_tx.send(packet_data).expect("Cannot process packet");
+                }
+            });
+            Ok(Self {
+                write_stream,
+                thread,
+                seq_num: 1,
+                receiver,
+            })
+        }
+        pub async fn enumerate(
+            &mut self,
+        ) -> Result<Box<dyn Stream<Item = EnumerateResponse> + Unpin + Send>, TinkerforgeError>
+        {
+            let request = Request::Set {
+                uid: 0,
+                function_id: 254,
+                payload: &[],
+            };
+            let stream =
+                BroadcastStream::new(self.receiver.resubscribe()).filter_map(|p| match p {
+                    Ok(p) if p.header.function_id == 253 => {
+                        Some(EnumerateResponse::from_le_byte_slice(&p.body))
+                    }
+                    _ => None,
+                });
+            let seq = self.next_seq();
+            self.send_packet(&request, seq, true).await?;
+            Ok(Box::new(stream))
+        }
+        pub async fn set(
+            &mut self,
+            uid: u32,
+            function_id: u8,
+            payload: &[u8],
+            timeout: Option<Duration>,
+        ) -> Result<Option<PacketData>, TinkerforgeError> {
+            let request = Request::Set {
+                uid,
+                function_id,
+                payload,
+            };
+            let seq = self.next_seq();
+            if let Some(timeout) = timeout {
+                let stream = BroadcastStream::new(self.receiver.resubscribe())
+                    .filter(Self::filter_response(uid, function_id, seq))
+                    .timeout(timeout);
+                self.send_packet(&request, seq, true).await?;
+                tokio::pin!(stream);
+                if let Some(done) = stream.next().await {
+                    Ok(Some(
+                        done.map_err(|_| TinkerforgeError::NoResponseReceived)??,
+                    ))
+                } else {
+                    Err(TinkerforgeError::NoResponseReceived)
+                }
+            } else {
+                self.send_packet(&request, seq, false).await?;
+                Ok(None)
+            }
+        }
+
+        fn filter_response(
+            uid: u32,
+            function_id: u8,
+            seq: u8,
+        ) -> impl Fn(&Result<PacketData, BroadcastStreamRecvError>) -> bool {
+            move |result| {
+                result.as_ref().is_ok_and(|p| {
+                    let header = &p.header;
+                    header.uid == uid
+                        && header.function_id == function_id
+                        && header.sequence_number == seq
+                })
+            }
+        }
+        pub async fn get(
+            &mut self,
+            uid: u32,
+            function_id: u8,
+            payload: &[u8],
+            timeout: Duration,
+        ) -> Result<PacketData, TinkerforgeError> {
+            let seq = self.next_seq();
+            let stream = BroadcastStream::new(self.receiver.resubscribe())
+                .filter(Self::filter_response(uid, function_id, seq))
+                .timeout(timeout);
+            tokio::pin!(stream);
+            let request = Request::Get {
+                uid,
+                function_id,
+                payload,
+            };
+            self.send_packet(&request, seq, true).await?;
+            Ok(stream
+                .next()
+                .await
+                .ok_or(TinkerforgeError::NoResponseReceived)?
+                .map_err(|_| TinkerforgeError::NoResponseReceived)??)
+        }
+        pub(crate) async fn callback_stream(
+            &mut self,
+            uid: u32,
+            function_id: u8,
+        ) -> impl Stream<Item = PacketData> {
+            BroadcastStream::new(self.receiver.resubscribe()).filter_map(move |result| match result
+            {
+                Ok(p) => {
+                    let header = &p.header;
+                    if header.uid == uid && header.function_id == function_id {
+                        Some(p)
+                    } else {
+                        None
+                    }
+                }
+                Err(BroadcastStreamRecvError::Lagged(count)) => {
+                    warn!("Slow receiver, skipped {count} Packets");
+                    None
+                }
+            })
+        }
+        async fn send_packet(
+            &mut self,
+            request: &Request<'_>,
+            seq: u8,
+            response_expected: bool,
+        ) -> Result<(), TinkerforgeError> {
+            let header = request.get_header(response_expected, seq);
+            assert!(header.length < 72);
+            let mut result = vec![0; header.length as usize + 8];
+            result[0..4].copy_from_slice(&u32::to_le_byte_vec(header.uid));
+            result[4] = header.length;
+            result[5] = header.function_id;
+            result[6] = header.sequence_number << 4 | (header.response_expected as u8) << 3;
+            result[7] = header.error_code << 6;
+            let payload = request.get_payload();
+            if !payload.is_empty() {
+                result[8..].copy_from_slice(payload);
+            }
+            self.write_stream.write_all(&result[..]).await?;
+            Ok(())
+        }
+        fn next_seq(&mut self) -> u8 {
+            self.seq_num += 1;
+            if self.seq_num > 15 {
+                self.seq_num = 1;
+            }
+            self.seq_num
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    pub(crate) struct PacketData {
+        header: PacketHeader,
+        body: Box<[u8]>,
+    }
+
+    impl PacketData {
+        pub fn header(&self) -> PacketHeader {
+            self.header
+        }
+        pub fn body(&self) -> &Box<[u8]> {
+            &self.body
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    pub(crate) enum Request<'a> {
+        Set {
+            uid: u32,
+            function_id: u8,
+            payload: &'a [u8],
+        },
+        Get {
+            uid: u32,
+            function_id: u8,
+            payload: &'a [u8],
+        },
+    }
+    impl Request<'_> {
+        fn get_header(&self, response_expected: bool, sequence_number: u8) -> PacketHeader {
+            match self {
+                Request::Set {
+                    uid,
+                    function_id,
+                    payload,
+                } => PacketHeader::with_payload(
+                    *uid,
+                    *function_id,
+                    sequence_number,
+                    response_expected,
+                    payload.len() as u8,
+                ),
+                Request::Get {
+                    uid,
+                    function_id,
+                    payload,
+                    ..
+                } => PacketHeader::with_payload(
+                    *uid,
+                    *function_id,
+                    sequence_number,
+                    true,
+                    payload.len() as u8,
+                ),
+            }
+        }
+        fn get_payload(&self) -> &[u8] {
+            match self {
+                Request::Set { payload, .. } => payload,
+                Request::Get { payload, .. } => payload,
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -50,8 +350,21 @@ pub(crate) struct PacketHeader {
 }
 
 impl PacketHeader {
-    pub(crate) fn with_payload(uid: u32, function_id: u8, sequence_number: u8, response_expected: bool, payload_len: u8) -> PacketHeader {
-        PacketHeader { uid, length: PacketHeader::SIZE as u8 + payload_len, function_id, sequence_number, response_expected, error_code: 0 }
+    pub(crate) fn with_payload(
+        uid: u32,
+        function_id: u8,
+        sequence_number: u8,
+        response_expected: bool,
+        payload_len: u8,
+    ) -> PacketHeader {
+        PacketHeader {
+            uid,
+            length: PacketHeader::SIZE as u8 + payload_len,
+            function_id,
+            sequence_number,
+            response_expected,
+            error_code: 0,
+        }
     }
 
     pub(crate) const SIZE: usize = 8;
@@ -69,92 +382,32 @@ impl FromByteSlice for PacketHeader {
         }
     }
 
-    fn bytes_expected() -> usize { 8 }
+    fn bytes_expected() -> usize {
+        8
+    }
 }
 
 impl ToBytes for PacketHeader {
     fn to_le_byte_vec(header: PacketHeader) -> Vec<u8> {
-        let mut result = vec![0u8; 8];
-        result[0..4].copy_from_slice(&u32::to_le_byte_vec(header.uid));
-        result[4] = header.length;
-        result[5] = header.function_id;
-        result[6] = header.sequence_number << 4 | (header.response_expected as u8) << 3;
-        result[7] = header.error_code << 6;
-        result
+        let mut target = vec![0u8; 8];
+        target[0..4].copy_from_slice(&u32::to_le_byte_vec(header.uid));
+        target[4] = header.length;
+        target[5] = header.function_id;
+        target[6] = header.sequence_number << 4 | (header.response_expected as u8) << 3;
+        target[7] = header.error_code << 6;
+        target
+    }
+
+    fn write_to_slice(self, target: &mut [u8]) {
+        target[0..4].copy_from_slice(&u32::to_le_byte_vec(self.uid));
+        target[4] = self.length;
+        target[5] = self.function_id;
+        target[6] = self.sequence_number << 4 | (self.response_expected as u8) << 3;
+        target[7] = self.error_code << 6;
     }
 }
 
 const MAX_PACKET_SIZE: usize = PacketHeader::SIZE + 64 + 8; //header + payload + optional data
-
-#[allow(clippy::needless_pass_by_value)] //All parameters are moved into the thread closure anyway.
-fn socket_read_thread_fn(mut tcp_stream: TcpStream, response_tx: Sender<SocketThreadRequest>, session_id: u64) {
-    const READ_BUFFER_SIZE: usize = MAX_PACKET_SIZE * 100;
-    let mut read_buffer = vec![0; READ_BUFFER_SIZE]; //keep buffer for 100 packets
-    let mut read_buffer_level = 0;
-    let mut packet_buffer = Vec::with_capacity(MAX_PACKET_SIZE);
-    let mut packet_buffer_pending_bytes: usize = 0;
-    //tcp_stream.set_read_timeout(Some(Duration::new(0,10_000_000)));
-    //tcp_stream.set_nonblocking(true);
-    loop {
-        //only read if the buffer can fit a packet of max size
-        if READ_BUFFER_SIZE - read_buffer_level > MAX_PACKET_SIZE {
-            match tcp_stream.read(&mut read_buffer[read_buffer_level..READ_BUFFER_SIZE]) {
-                Ok(0) => {
-                    //Socket was closed
-                    response_tx
-                        .send(SocketThreadRequest::SocketWasClosed(session_id, true))
-                        .expect("Socket read thread was disconnected from socket thread queue. This is a bug in the rust bindings.");
-                    break;
-                }
-                Ok(bytes_read) => read_buffer_level += bytes_read,
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {}
-                Err(_e) => {
-                    //TODO: check for non-socket-related errors
-                    response_tx
-                        .send(SocketThreadRequest::SocketWasClosed(session_id, false))
-                        .expect("Socket read thread was disconnected from socket thread queue. This is a bug in the rust bindings.");
-                    break;
-                }
-            }
-        }
-
-        loop {
-            //Don't have a complete header yet
-            if packet_buffer.is_empty() && read_buffer_level < PacketHeader::SIZE {
-                break;
-            }
-
-            //Read header
-            if packet_buffer.is_empty() {
-                read_into_packet_buffer(&mut read_buffer, &mut packet_buffer, PacketHeader::SIZE, &mut read_buffer_level);
-                let header = PacketHeader::from_le_byte_slice(&packet_buffer);
-                //if header.sequence_number != 0 {
-                //    println!("Read header for uid {}, fid {}, seq_num {}", header.uid, header.function_id, header.sequence_number);
-                // }
-                packet_buffer_pending_bytes = header.length as usize - PacketHeader::SIZE;
-            }
-
-            //Read payload
-            if packet_buffer_pending_bytes > 0 && read_buffer_level > 0 {
-                let to_read = std::cmp::min(packet_buffer_pending_bytes, read_buffer_level);
-                read_into_packet_buffer(&mut read_buffer, &mut packet_buffer, to_read, &mut read_buffer_level);
-                packet_buffer_pending_bytes -= to_read;
-            }
-
-            //Packet complete
-            if packet_buffer_pending_bytes == 0 {
-                let header = PacketHeader::from_le_byte_slice(&packet_buffer);
-
-                response_tx
-                    .send(SocketThreadRequest::Response(header, packet_buffer[PacketHeader::SIZE..header.length as usize].to_vec()))
-                    .expect("Socket read thread was disconnected from socket thread queue. This is a bug in the rust bindings.");
-                packet_buffer.clear();
-            } else {
-                break;
-            }
-        }
-    }
-}
 
 /// Type of enumeration of a device.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
@@ -212,6 +465,10 @@ pub struct EnumerateResponse {
     pub enumeration_type: EnumerationType,
 }
 
+impl EnumerateResponse {
+    pub fn uid_as_number(&self) {}
+}
+
 impl FromByteSlice for EnumerateResponse {
     fn from_le_byte_slice(bytes: &[u8]) -> EnumerateResponse {
         EnumerateResponse {
@@ -229,39 +486,17 @@ impl FromByteSlice for EnumerateResponse {
         }
     }
 
-    fn bytes_expected() -> usize { 26 }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) enum Request {
-    Set { uid: u32, function_id: u8, payload: Vec<u8>, response_sender: Option<Sender<Result<Vec<u8>, BrickletError>>> },
-    Get { uid: u32, function_id: u8, payload: Vec<u8>, response_sender: Sender<Result<Vec<u8>, BrickletError>> },
-    RegisterCallback { uid: u32, function_id: u8, response_sender: Sender<Vec<u8>> },
-    RegisterConnectCallback(Sender<ConnectReason>),
-    RegisterDisconnectCallback(Sender<DisconnectReason>),
-    RegisterEnumerateCallback(Sender<Vec<u8>>),
-}
-
-impl Request {
-    pub(crate) fn get_header(&self, sequence_number: u8) -> PacketHeader {
-        match self {
-            Request::Set { uid, function_id, payload, response_sender } =>
-                PacketHeader::with_payload(*uid, *function_id, sequence_number, response_sender.is_some(), payload.len() as u8),
-            Request::Get { uid, function_id, payload, .. } =>
-                PacketHeader::with_payload(*uid, *function_id, sequence_number, true, payload.len() as u8),
-            Request::RegisterCallback { .. } =>
-                unreachable!("Can not create header for callback registration. This is a bug in the rust bindings."),
-            Request::RegisterConnectCallback(_) =>
-                unreachable!("Can not create header for callback registration. This is a bug in the rust bindings."),
-            Request::RegisterDisconnectCallback(_) =>
-                unreachable!("Can not create header for callback registration. This is a bug in the rust bindings."),
-            Request::RegisterEnumerateCallback(_) =>
-                unreachable!("Can not create header for callback registration. This is a bug in the rust bindings."),
-        }
+    fn bytes_expected() -> usize {
+        26
     }
 }
 
-fn read_into_packet_buffer(read_buffer: &mut Vec<u8>, packet_buffer: &mut Vec<u8>, bytes_to_read: usize, read_buffer_level: &mut usize) {
+fn read_into_packet_buffer(
+    read_buffer: &mut Vec<u8>,
+    packet_buffer: &mut Vec<u8>,
+    bytes_to_read: usize,
+    read_buffer_level: &mut usize,
+) {
     //packet_buffer.copy_from_slice(&read_buffer[0..bytes_to_read]);
     packet_buffer.extend(read_buffer.drain(0..bytes_to_read));
     //for i in 0..bytes_to_read {
@@ -269,32 +504,6 @@ fn read_into_packet_buffer(read_buffer: &mut Vec<u8>, packet_buffer: &mut Vec<u8
     //}
     read_buffer.extend_from_slice(&vec![0u8; bytes_to_read]);
     *read_buffer_level -= bytes_to_read;
-}
-
-fn cancel_request(request: Request) {
-    let response_sender_opt = match request {
-        Request::RegisterCallback { .. } => unreachable!("Can not cancel callback registration. This is a bug in the rust bindings."),
-        Request::RegisterConnectCallback(_) => unreachable!("Can not cancel callback registration. This is a bug in the rust bindings."),
-        Request::RegisterDisconnectCallback(_) => unreachable!("Can not cancel callback registration. This is a bug in the rust bindings."),
-        Request::RegisterEnumerateCallback(_) => unreachable!("Can not cancel callback registration. This is a bug in the rust bindings."),
-        Request::Set { response_sender, .. } => response_sender,
-        Request::Get { response_sender, .. } => Some(response_sender),
-    };
-    if let Some(response_sender) = response_sender_opt {
-        let _ = response_sender.send(Err(BrickletError::NotConnected));
-    }
-}
-
-fn register_callback(
-    uid: u32,
-    function_id: u8,
-    response_sender: Sender<Vec<u8>>,
-    registered_callbacks: &mut HashMap<(u32, u8), Vec<Sender<Vec<u8>>>>,
-) {
-    let key = (uid, function_id);
-    let val = response_sender;
-
-    registered_callbacks.entry(key).or_default().push(val);
 }
 
 /// This enum specifies the reason of a successful connection.
@@ -317,289 +526,6 @@ pub enum DisconnectReason {
     Error,
     /// Disconnect initiated by Brick Daemon or WIFI/Ethernet Extension.
     Shutdown,
-}
-
-fn is_socket_really_connected(stream: &mut TcpStream) -> Result<bool, std::io::Error> {
-    stream.set_nonblocking(true)?;
-    let mut buf = [0u8; 1];
-    let result = match stream.peek(&mut buf) {
-        Ok(0) => Ok(false),
-        Ok(_) => Ok(true),
-        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(true),
-        Err(_) => Ok(false),
-    };
-    stream.set_nonblocking(false)?;
-    result
-}
-
-fn create_socket_from_list(addrs: &Vec<SocketAddr>) -> std::io::Result<(TcpStream, TcpStream)> {
-    let mut error = std::io::Error::new(std::io::ErrorKind::Other, "Could not resolve hostname or no IP address was given!");
-    for addr in addrs {
-        match create_socket(addr) {
-            Ok(tup) => return Ok(tup),
-            Err(e) => error = e,
-        }
-    }
-    return Err(error);
-}
-
-fn create_socket(addr: &SocketAddr) -> std::io::Result<(TcpStream, TcpStream)> {
-    let mut tcp_stream = TcpStream::connect_timeout(&addr, Duration::new(30, 0))?;
-
-    tcp_stream.set_read_timeout(Some(Duration::new(5, 0)))?;
-    tcp_stream.set_write_timeout(Some(Duration::new(5, 0)))?;
-    tcp_stream.set_nodelay(true)?;
-
-    if !is_socket_really_connected(&mut tcp_stream)? {
-        return Err(std::io::Error::new(std::io::ErrorKind::ConnectionReset, "was not really connected"));
-    };
-
-    let stream_copy = tcp_stream.try_clone()?;
-    Ok((tcp_stream, stream_copy))
-}
-
-#[allow(clippy::needless_pass_by_value)] //All parameters are moved into the thread closure anyway.
-fn socket_thread_fn(
-    work_queue_rx: Receiver<SocketThreadRequest>,
-    work_queue_tx: Sender<SocketThreadRequest>,
-    connection_state: Arc<AtomicUsize>,
-) {
-    let mut registered_callbacks = HashMap::<(u32, u8), Vec<Sender<Vec<u8>>>>::new();
-    let mut connect_callbacks = Vec::new();
-    let mut disconnect_callbacks = Vec::new();
-    let mut enumerate_callbacks = Vec::new();
-    let mut session_id = 0u64;
-    let mut timeout = Duration::new(2, 500_000_000);
-    let mut auto_reconnect_enabled = true;
-    let mut auto_reconnect_allowed = true;
-    let mut is_auto_reconnect = false;
-
-    'thread: loop {
-        connection_state.store(0, Ordering::SeqCst);
-        let mut seq_num: u8 = 1;
-        let mut send_buffer = Vec::with_capacity(MAX_PACKET_SIZE);
-        let mut response_queues = HashMap::<(u32, u8, u8), Vec<Sender<Result<Vec<u8>, BrickletError>>>>::new();
-        let mut disconnect_reason = DisconnectReason::Error;
-
-        //wait for ip address and port
-        let (addrs, connection_request_done_tx) = 'wait_for_connect: loop {
-            match work_queue_rx.recv() {
-                Ok(SocketThreadRequest::Request(Request::RegisterCallback { uid, function_id, response_sender }, sent_tx)) => {
-                    register_callback(uid, function_id, response_sender, &mut registered_callbacks);
-                    sent_tx.send(timeout).expect("Request sent queue was dropped. This is a bug in the rust bindings.")
-                }
-                Ok(SocketThreadRequest::Request(Request::RegisterConnectCallback(response_sender), sent_tx)) => {
-                    connect_callbacks.push(response_sender);
-                    sent_tx.send(timeout).expect("Request sent queue was dropped. This is a bug in the rust bindings.")
-                }
-                Ok(SocketThreadRequest::Request(Request::RegisterDisconnectCallback(response_sender), sent_tx)) => {
-                    disconnect_callbacks.push(response_sender);
-                    sent_tx.send(timeout).expect("Request sent queue was dropped. This is a bug in the rust bindings.")
-                }
-                Ok(SocketThreadRequest::Request(Request::RegisterEnumerateCallback(response_sender), sent_tx)) => {
-                    enumerate_callbacks.push(response_sender);
-                    sent_tx.send(timeout).expect("Request sent queue was dropped. This is a bug in the rust bindings.")
-                }
-                Ok(SocketThreadRequest::Request(req, sent_tx)) => {
-                    cancel_request(req);
-                    sent_tx.send(timeout).expect("Request sent queue was dropped. This is a bug in the rust bindings.")
-                }
-                Ok(SocketThreadRequest::Terminate) => break 'thread,
-                Ok(SocketThreadRequest::Connect(addrs, tx)) => {
-                    is_auto_reconnect = false;
-                    break 'wait_for_connect (addrs, Some(tx));
-                }
-                Ok(SocketThreadRequest::Disconnect(tx)) =>
-                    if !is_auto_reconnect {
-                        let _ = tx.send(Err(DisconnectErrorNotConnected));
-                    } else {
-                        auto_reconnect_allowed = false;
-                    },
-                Ok(SocketThreadRequest::SocketWasClosed(_, _)) => {} //Ignore: There is no socket that could be closed yet.
-                Ok(SocketThreadRequest::Response(_, _)) => {}        //ignore network data, the thread creating it is not running yet
-                Ok(SocketThreadRequest::SetTimeout(t)) => timeout = t,
-                Ok(SocketThreadRequest::GetTimeout(tx)) => tx.send(timeout).expect("Request sent queue was dropped. This is a bug in the rust bindings."),
-                Ok(SocketThreadRequest::TriggerAutoReconnect(addrs)) => {
-                    if !auto_reconnect_allowed {
-                        continue 'wait_for_connect;
-                    }
-                    is_auto_reconnect = true;
-                    break 'wait_for_connect (addrs, None);
-                }
-                Ok(SocketThreadRequest::SetAutoReconnect(ar_enabled)) => auto_reconnect_enabled = ar_enabled,
-                Ok(SocketThreadRequest::GetAutoReconnect(ar_tx)) => ar_tx.send(auto_reconnect_enabled).expect("Request sent queue was dropped. This is a bug in the rust bindings."),
-                Err(_) => {
-                    println!("Disconnected from Queue.");
-                    break 'thread;
-                }
-            }
-        };
-
-        //connect to received or last ip and port
-        session_id += 1;
-        connection_state.store(2, Ordering::SeqCst);
-
-        let (mut tcp_stream, stream_copy) = match create_socket_from_list(&addrs) {
-            Ok((a, b)) => (a, b),
-            Err(e) => {
-                if let Some(tx) = connection_request_done_tx {
-                    let _ = tx.send(Err(ConnectError::IoError(e)));
-                }
-                work_queue_tx
-                    .send(SocketThreadRequest::TriggerAutoReconnect(addrs))
-                    .expect("Socket thread was still running, but it's work queue was destroyed. This is a bug in the rust bindings.");
-                continue 'thread;
-            }
-        };
-
-        let socket_read_thread = {
-            let local_tx_copy = work_queue_tx.clone();
-            thread::spawn(move || {
-                socket_read_thread_fn(stream_copy, local_tx_copy, session_id);
-            })
-        };
-
-        //we have a connection, notify requester, connection state and all registered event receivers
-        if let Some(tx) = connection_request_done_tx {
-            let _ = tx.send(Ok(()));
-        }
-
-        connection_state.store(1, Ordering::SeqCst);
-        {
-            let connect_reason = if is_auto_reconnect { ConnectReason::AutoReconnect } else { ConnectReason::Request };
-            connect_callbacks.retain(|queue| queue.send(connect_reason).is_ok());
-        }
-
-        'connection: loop {
-            match work_queue_rx.recv_timeout(Duration::new(5, 0)) {
-                Ok(SocketThreadRequest::Request(request, sent_tx)) => {
-                    let mut notify_sender = true;
-                    match request {
-                        Request::RegisterCallback { uid, function_id, response_sender } =>
-                            register_callback(uid, function_id, response_sender, &mut registered_callbacks),
-                        Request::RegisterConnectCallback(response_sender) => connect_callbacks.push(response_sender),
-                        Request::RegisterDisconnectCallback(response_sender) => disconnect_callbacks.push(response_sender),
-                        Request::RegisterEnumerateCallback(response_sender) => enumerate_callbacks.push(response_sender),
-                        req => {
-                            if let Request::Set { uid: 0, function_id: 128, response_sender: None, .. } = req {
-                                //FIXME: when response_sender is none, the sender can not be notified anyway.
-                                notify_sender = false;
-                            }
-                            let header = req.get_header(seq_num);
-                            let sent_seq_num = seq_num;
-                            seq_num += 1;
-                            if seq_num == 16 {
-                                seq_num = 1;
-                            }
-                            send_buffer.clear();
-                            send_buffer.extend_from_slice(&PacketHeader::to_le_byte_vec(header));
-
-                            let (uid, function_id, payload, response_sender_opt) = match req {
-                                Request::Set { uid, function_id, payload, response_sender } => (uid, function_id, payload, response_sender),
-                                Request::Get { uid, function_id, payload, response_sender } =>
-                                    (uid, function_id, payload, Some(response_sender)),
-                                Request::RegisterCallback { .. } =>
-                                    unreachable!("Can not extract params from callback registration. This is a bug in the rust bindings."),
-                                Request::RegisterConnectCallback(_) =>
-                                    unreachable!("Can not extract params from callback registration. This is a bug in the rust bindings."),
-                                Request::RegisterDisconnectCallback(_) =>
-                                    unreachable!("Can not extract params from callback registration. This is a bug in the rust bindings."),
-                                Request::RegisterEnumerateCallback(_) =>
-                                    unreachable!("Can not extract params from callback registration. This is a bug in the rust bindings."),
-                            };
-
-                            if response_sender_opt.is_some() {
-                                let key = (uid, function_id, sent_seq_num);
-                                let val = response_sender_opt.unwrap();
-                                response_queues.entry(key).or_default().push(val);
-                            }
-                            send_buffer.extend_from_slice(&payload);
-                            if tcp_stream.write_all(&send_buffer).is_err() {
-                                if auto_reconnect_enabled {
-                                    let _ = work_queue_tx.send(SocketThreadRequest::TriggerAutoReconnect(addrs));
-                                }
-                                break 'connection;
-                            }
-                        }
-                    }
-                    if notify_sender {
-                        sent_tx.send(timeout).expect("Request sent queue was dropped. This is a bug in the rust bindings."); //Notify caller that the request is sent
-                    }
-                }
-                Ok(SocketThreadRequest::Terminate) => {
-                    break 'thread;
-                }
-                Ok(SocketThreadRequest::Connect(_, tx)) => {
-                    let _ = tx.send(Err(ConnectError::AlreadyConnected));
-                }
-                Ok(SocketThreadRequest::TriggerAutoReconnect(_)) => {}
-                Ok(SocketThreadRequest::Disconnect(tx)) => {
-                    let _ = tcp_stream.shutdown(Shutdown::Both); //we are closing the connection anyway, so ignore errors here
-                    let _ = tx.send(Ok(()));
-                    disconnect_reason = DisconnectReason::Request;
-                    break 'connection;
-                }
-                Ok(SocketThreadRequest::SocketWasClosed(sid, was_shutdown)) if sid == session_id => {
-                    if auto_reconnect_enabled {
-                        let _ = work_queue_tx.send(SocketThreadRequest::TriggerAutoReconnect(addrs));
-                    }
-                    disconnect_reason = if was_shutdown { DisconnectReason::Shutdown } else { DisconnectReason::Error };
-                    break 'connection;
-                }
-                Ok(SocketThreadRequest::SocketWasClosed(_, _)) => {
-                    /* The socket read thread sends this message also when we closed the session by request. Ignore it here as it is obsolete.*/
-                }
-                Ok(SocketThreadRequest::Response(header, payload)) => {
-                    if header.sequence_number == 0 {
-                        if header.function_id == 253 {
-                            enumerate_callbacks.retain(|queue| queue.send(payload.clone()).is_ok());
-                        } else {
-                            //callback
-                            let key = (header.uid, header.function_id);
-                            if let Some(queue_vec) = registered_callbacks.get_mut(&key) {
-                                queue_vec.retain(|queue| queue.send(payload.clone()).is_ok())
-                            }
-                        }
-                    } else {
-                        //response for getter or setter
-                        let key = (header.uid, header.function_id, header.sequence_number);
-                        let mut should_remove_val = false;
-                        if let Some(queue_vec) = response_queues.get_mut(&key) {
-                            let queue = queue_vec.remove(0);
-                            if header.error_code != 0 {
-                                let _ = queue.send(Err(BrickletError::from(header.error_code)));
-                            } else {
-                                let _ = queue.send(Ok(payload));
-                            }
-                            should_remove_val = queue_vec.is_empty();
-                        };
-                        if should_remove_val && response_queues.contains_key(&key) {
-                            response_queues.remove(&key);
-                        }
-                    }
-                }
-                Ok(SocketThreadRequest::SetTimeout(t)) => timeout = t,
-                Ok(SocketThreadRequest::GetTimeout(tx)) => tx.send(timeout).expect("Request sent queue was dropped. This is a bug in the rust bindings."),
-                Ok(SocketThreadRequest::SetAutoReconnect(ar_enabled)) => auto_reconnect_enabled = ar_enabled,
-                Ok(SocketThreadRequest::GetAutoReconnect(ar_tx)) => ar_tx.send(auto_reconnect_enabled).expect("Request sent queue was dropped. This is a bug in the rust bindings."),
-                Err(RecvTimeoutError::Timeout) => {
-                    let (_tx, _rx) = channel();
-                    let _ = work_queue_tx.send(SocketThreadRequest::Request(
-                        Request::Set { uid: 0, function_id: 128, payload: vec![], response_sender: None },
-                        _tx,
-                    ));
-                }
-                Err(_) => {
-                    println!("Disconnected from Queue. This is a bug in the rust bindings.");
-                    break 'thread;
-                }
-            }
-        }
-        socket_read_thread.join().expect("The socket read thread paniced or could not be joined. This is a bug in the rust bindings.");
-        disconnect_callbacks.retain(|queue| queue.send(disconnect_reason).is_ok());
-    }
-    connection_state.store(0, Ordering::SeqCst);
-    disconnect_callbacks.retain(|queue| queue.send(DisconnectReason::Request).is_ok());
 }
 
 /// This error is raised if a [`connect`](crate::ip_connection::IpConnection::connect) call fails.
@@ -652,26 +578,14 @@ impl std::fmt::Display for ConnectError {
 }
 
 impl From<std::io::Error> for ConnectError {
-    fn from(err: std::io::Error) -> Self { ConnectError::IoError(err) }
+    fn from(err: std::io::Error) -> Self {
+        ConnectError::IoError(err)
+    }
 }
 
 /// This error is raised if a disconnect request failed, because there was no connection to disconnect
 #[derive(Debug)]
 pub struct DisconnectErrorNotConnected;
-
-pub(crate) enum SocketThreadRequest {
-    Request(Request, Sender<Duration>),
-    Connect(Vec<SocketAddr>, Sender<Result<(), ConnectError>>),
-    Disconnect(Sender<Result<(), DisconnectErrorNotConnected>>),
-    SocketWasClosed(u64, bool),
-    Response(PacketHeader, Vec<u8>),
-    SetTimeout(Duration),
-    GetTimeout(Sender<Duration>),
-    TriggerAutoReconnect(Vec<SocketAddr>),
-    SetAutoReconnect(bool),
-    GetAutoReconnect(Sender<bool>),
-    Terminate,
-}
 
 /// This enum is returned from the [`get_connection_state`](crate::ip_connection::IpConnection::get_connection_state) method.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -697,303 +611,35 @@ impl From<usize> for ConnectionState {
 struct ServerNonce([u8; 4]);
 
 impl FromByteSlice for ServerNonce {
-    fn from_le_byte_slice(bytes: &[u8]) -> ServerNonce { ServerNonce([bytes[0], bytes[1], bytes[2], bytes[3]]) }
+    fn from_le_byte_slice(bytes: &[u8]) -> ServerNonce {
+        ServerNonce([bytes[0], bytes[1], bytes[2], bytes[3]])
+    }
 
-    fn bytes_expected() -> usize { 4 }
+    fn bytes_expected() -> usize {
+        4
+    }
 }
 
 /// This error is returned if the remote's server nonce could not be queried.
 #[derive(Debug, Copy, Clone)]
 pub enum AuthenticateError {
     SecretInvalid,
-    CouldNotGetServerNonce
+    CouldNotGetServerNonce,
 }
 
 impl std::fmt::Display for AuthenticateError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result { write!(f, "{}", self.description()) }
-}
-
-impl std::error::Error for AuthenticateError {
-    fn description(&self) -> &str { match *self {
-            AuthenticateError::SecretInvalid => "Authentication secret contained non-ASCII characters",
-            AuthenticateError::CouldNotGetServerNonce => "Could not get server nonce"
-        }
-    }
-}
-
-impl Default for IpConnection {
-    fn default() -> Self {
-        let (socket_thread_tx, socket_thread_rx) = channel();
-        let copy = socket_thread_tx.clone();
-        let atomic = Arc::new(AtomicUsize::new(0));
-        IpConnection {
-            req: IpConnectionRequestSender {
-                socket_thread_tx,
-                connection_state: Arc::clone(&atomic)
-            },
-            socket_thread: Some(thread::spawn(move || {
-                socket_thread_fn(socket_thread_rx, copy, Arc::clone(&atomic));
-            })),
-        }
-    }
-}
-
-impl Drop for IpConnection {
-    fn drop(&mut self) {
-        let _ = self.req.socket_thread_tx.send(SocketThreadRequest::Terminate);
-        if let Some(thread) = self.socket_thread.take() {
-            thread.join().expect("Could not join socket thread. This is a bug in the rust bindings.");
-        }
-    }
-}
-
-/// A trait to get an [`IpConnectionRequestSender`](crate::ip_connection::IpConnectionRequestSender).
-/// Implementing this trait allows a type to used to create device handles.
-pub trait GetRequestSender {
-    fn get_rs(&self) -> IpConnectionRequestSender;
-}
-
-impl GetRequestSender for &IpConnection {
-    fn get_rs(&self) -> IpConnectionRequestSender {
-        self.get_request_sender()
-    }
-}
-
-impl GetRequestSender for &IpConnectionRequestSender {
-    fn get_rs(&self) -> IpConnectionRequestSender {
-        self.clone().to_owned()
-    }
-}
-
-impl IpConnectionRequestSender {
-    /// Creates a TCP/IP connection to the given `addr`. `addr` can be any object which implements
-    /// [`ToSocketAddrs`](std::net::ToSocketAddrs), for example a tuple of a hostname and a port.
-    /// The address can refer to a Brick Daemon or to a WIFI/Ethernet Extension.
-    ///
-    /// Devices can only be controlled when the connection was established successfully.
-    ///
-    /// Returns a receiver, which will receive either ``()`` or an ``ConnectError`` if there is no Brick Daemon or WIFI/Ethernet Extension listening at the given host and port.
-    pub fn connect<T: ToSocketAddrs>(&self, addr: T) -> Receiver<Result<(), ConnectError>> {
-        let (tx, rx) = channel();
-        let sock_addrs = match addr.to_socket_addrs().map_err(|e| ConnectError::IoError(e)).map(|iter| iter.collect::<Vec<SocketAddr>>()) {
-            Ok(addresses) => addresses,
-            Err(e) => {
-                tx.send(Err(e)).expect("Socket thread has crashed. This is a bug in the rust bindings.");
-                return rx;
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                AuthenticateError::SecretInvalid => {
+                    "Authentication secret contained non-ASCII characters"
+                }
+                AuthenticateError::CouldNotGetServerNonce => "Could not get server nonce",
             }
-        };
-        self.socket_thread_tx
-            .send(SocketThreadRequest::Connect(sock_addrs, tx))
-            .expect("Socket thread has crashed. This is a bug in the rust bindings.");
-        rx
-    }
-
-    /// Disconnects the TCP/IP connection from the Brick Daemon or the WIFI/Ethernet Extension.
-    pub fn disconnect(&self) -> Receiver<Result<(), DisconnectErrorNotConnected>> {
-        let (tx, rx) = channel();
-        self.socket_thread_tx
-            .send(SocketThreadRequest::Disconnect(tx))
-            .expect("Socket thread has crashed. This is a bug in the rust bindings.");
-        rx
-    }
-
-    /// This event is triggered whenever the IP Connection got connected to a Brick Daemon or to a WIFI/Ethernet Extension.
-    pub fn get_connect_callback_receiver(&self) -> Receiver<ConnectReason> {
-        let (tx, rx) = channel();
-        let (sent_tx, sent_rx) = channel();
-        self.socket_thread_tx
-            .send(SocketThreadRequest::Request(Request::RegisterConnectCallback(tx), sent_tx))
-            .expect("Socket thread has crashed. This is a bug in the rust bindings.");
-        sent_rx.recv().expect("The sent queue was dropped. This is a bug in the rust bindings.");
-        rx
-    }
-
-    /// This event is triggered whenever the IP Connection got disconnected from a Brick Daemon or to a WIFI/Ethernet Extension.
-    pub fn get_disconnect_callback_receiver(&self) -> Receiver<DisconnectReason> {
-        let (tx, rx) = channel();
-        let (sent_tx, sent_rx) = channel();
-        self.socket_thread_tx
-            .send(SocketThreadRequest::Request(Request::RegisterDisconnectCallback(tx), sent_tx))
-            .expect("Socket thread has crashed. This is a bug in the rust bindings.");
-        sent_rx.recv().expect("The sent queue was dropped. This is a bug in the rust bindings.");
-        rx
-    }
-
-    /// Returns the timeout as set by [`set_timeout`](crate::ip_connection::IpConnection::set_timeout)
-    pub fn get_timeout(&self) -> Duration {
-        let (tx, rx) = channel();
-        self.socket_thread_tx.send(SocketThreadRequest::GetTimeout(tx)).expect("Socket thread has crashed. This is a bug in the rust bindings.");
-        rx.recv().expect("The auto reconnect queue was dropped. This is a bug in the rust bindings.")
-    }
-
-    /// Sets the timeout for getters and for setters for which the response expected flag is activated.
-    ///
-    /// Default timeout is 2,5s.
-    pub fn set_timeout(&mut self, timeout: Duration) {
-        self.socket_thread_tx
-            .send(SocketThreadRequest::SetTimeout(timeout))
-            .expect("Socket thread has crashed. This is a bug in the rust bindings.");
-    }
-
-    /// Queries the current connection state.
-    pub fn get_connection_state(&self) -> ConnectionState { ConnectionState::from(self.connection_state.load(Ordering::SeqCst)) }
-
-    /// Returns true if auto-reconnect is enabled, false otherwise.
-    pub fn get_auto_reconnect(&self) -> bool {
-        let (tx, rx) = channel();
-        self.socket_thread_tx.send(SocketThreadRequest::GetAutoReconnect(tx))
-            .expect("Socket thread has crashed. This is a bug in the rust bindings.");
-        rx.recv().expect("The auto reconnect queue was dropped. This is a bug in the rust bindings.")
-    }
-
-    /// Enables or disables auto-reconnect. If auto-reconnect is enabled, the IP Connection will try to reconnect to
-    /// the previously given host and port, if the currently existing connection is lost.
-    /// Therefore, auto-reconnect only does something after a successful [`connect`](crate::ip_connection::IpConnection::connect) call.
-    ///
-    /// Default value is true.
-    pub fn set_auto_reconnect(&mut self, auto_reconnect_enabled: bool) {
-        self.socket_thread_tx
-            .send(SocketThreadRequest::SetAutoReconnect(auto_reconnect_enabled))
-            .expect("Socket thread has crashed. This is a bug in the rust bindings.");
-    }
-
-    /// Broadcasts an enumerate request. All devices will respond with an enumerate event.
-    pub fn enumerate(&self) {
-        let (tx, rx) = channel();
-        self.socket_thread_tx
-            .send(SocketThreadRequest::Request(Request::Set { uid: 0, function_id: 254, payload: vec![], response_sender: None }, tx))
-            .expect("Socket thread has crashed. This is a bug in the rust bindings.");
-        rx.recv().expect("The sent queue was dropped. This is a bug in the rust bindings.");
-    }
-
-    /// This receiver receives enumerate events, as described [here](crate::ip_connection::EnumerateResponse).
-    ///
-    pub fn get_enumerate_callback_receiver(&self) -> ConvertingCallbackReceiver<EnumerateResponse> {
-        let (tx, rx) = channel();
-        let (sent_tx, sent_rx) = channel();
-        self.socket_thread_tx
-            .send(SocketThreadRequest::Request(Request::RegisterEnumerateCallback(tx), sent_tx))
-            .expect("Socket thread has crashed. This is a bug in the rust bindings.");
-        sent_rx.recv().expect("The sent queue was dropped. This is a bug in the rust bindings.");
-        ConvertingCallbackReceiver::new(rx)
-    }
-
-    /// Performs an authentication handshake with the connected Brick Daemon or WIFI/Ethernet Extension.
-    /// If the handshake succeeds the connection switches from non-authenticated to authenticated state
-    /// and communication can continue as normal. If the handshake fails then the connection gets closed.
-    /// Authentication can fail if the wrong secret was used or if authentication is not enabled at all
-    /// on the Brick Daemon or the WIFI/Ethernet Extension.
-    ///
-    /// See the authentication tutorial for more information.
-    ///
-    /// New in version 2.1.0.
-    pub fn authenticate(&self, secret: &str) -> Result<ConvertingReceiver<()>, AuthenticateError> {
-        if !secret.chars().all(|c| c.is_ascii()) {
-            return Err(AuthenticateError::SecretInvalid)
-        }
-        let (tx, rx) = channel();
-        let (sent_tx, sent_rx) = channel();
-        self.socket_thread_tx
-            .send(SocketThreadRequest::Request(Request::Get { uid: 1, function_id: 1, payload: vec![], response_sender: tx }, sent_tx))
-            .expect("Socket thread has crashed. This is a bug in the rust bindings.");
-        let timeout = sent_rx.recv().expect("The sent queue was dropped. This is a bug in the rust bindings.");
-        let recv = ConvertingReceiver::<ServerNonce>::new(rx, timeout);
-        let server_nonce = match recv.recv() {
-            Ok(nonce) => nonce,
-            Err(_) => return Err(AuthenticateError::CouldNotGetServerNonce),
-        };
-
-        let mut rng = ChaChaRng::from_entropy();
-        let mut client_nonce = [0u8; 4];
-        rng.fill_bytes(&mut client_nonce);
-
-        let mut to_hash = [0u8; 8];
-        //bytes::copy_memory(to_hash.mut_slice_to(4), )
-        to_hash[0..4].copy_from_slice(&server_nonce.0);
-        to_hash[4..=7].copy_from_slice(&client_nonce);
-
-        let mut mac = Hmac::<Sha1>::new_from_slice(secret.as_bytes()).expect("");
-        mac.update(&to_hash);
-        let result = mac.finalize();
-
-        let (auth_sent_tx, auth_sent_rx) = channel();
-        let mut payload = [0u8; 24];
-        payload[0..4].copy_from_slice(&client_nonce);
-        let hashed = result.into_bytes();
-        payload[4..24].copy_from_slice(&hashed);
-        let (auth_tx, auth_rx) = channel();
-        self.socket_thread_tx
-            .send(SocketThreadRequest::Request(
-                Request::Set { uid: 1, function_id: 2, payload: payload.to_vec(), response_sender: Some(auth_tx) },
-                auth_sent_tx,
-            ))
-            .expect("Socket thread has crashed. This is a bug in the rust bindings.");
-        let timeout = auth_sent_rx.recv().expect("The sent queue was dropped. This is a bug in the rust bindings.");
-        Ok(ConvertingReceiver::new(auth_rx, timeout))
+        )
     }
 }
 
-impl IpConnection {
-    /// Creates an IP Connection object that can be used to enumerate the available devices. It is also required for the constructor of Bricks and Bricklets.
-    pub fn new() -> IpConnection { Default::default() }
-
-    /// Returns a new request sender, to be used for example in other threads.
-    pub fn get_request_sender(&self) -> IpConnectionRequestSender { self.req.clone() }
-
-    /// Creates a TCP/IP connection to the given `host` and `port`. The host and port can refer to a Brick Daemon or to a WIFI/Ethernet Extension.
-    ///
-    /// Devices can only be controlled when the connection was established successfully.
-    ///
-    /// Returns a receiver, which will receive either ``()`` or an ``ConnectError`` if there is no Brick Daemon or WIFI/Ethernet Extension listening at the given host and port.
-    pub fn connect<T: ToSocketAddrs>(&self, addr: T) -> Receiver<Result<(), ConnectError>> { self.req.connect(addr) }
-
-    /// Disconnects the TCP/IP connection from the Brick Daemon or the WIFI/Ethernet Extension.
-    pub fn disconnect(&self) -> Receiver<Result<(), DisconnectErrorNotConnected>> { self.req.disconnect() }
-
-    /// This event is triggered whenever the IP Connection got connected to a Brick Daemon or to a WIFI/Ethernet Extension.
-    pub fn get_connect_callback_receiver(&self) -> Receiver<ConnectReason> { self.req.get_connect_callback_receiver() }
-
-    /// This event is triggered whenever the IP Connection got disconnected from a Brick Daemon or to a WIFI/Ethernet Extension.
-    pub fn get_disconnect_callback_receiver(&self) -> Receiver<DisconnectReason> { self.req.get_disconnect_callback_receiver() }
-
-    /// Returns the timeout as set by [`set_timeout`](crate::ip_connection::IpConnection::set_timeout)
-    pub fn get_timeout(&self) -> Duration { self.req.get_timeout() }
-
-    /// Sets the timeout for getters and for setters for which the response expected flag is activated.
-    ///
-    /// Default timeout is 2500 ms.
-    pub fn set_timeout(&mut self, timeout: Duration) { self.req.set_timeout(timeout) }
-
-    /// Queries the current connection state.
-    pub fn get_connection_state(&self) -> ConnectionState { self.req.get_connection_state() }
-
-    /// Returns true if auto-reconnect is enabled, false otherwise.
-    pub fn get_auto_reconnect(&self) -> bool { self.req.get_auto_reconnect() }
-
-    /// Enables or disables auto-reconnect. If auto-reconnect is enabled, the IP Connection will try to reconnect to
-    /// the previously given host and port, if the currently existing connection is lost.
-    /// Therefore, auto-reconnect only does something after a successful [`connect`](crate::ip_connection::IpConnection::connect) call.
-    ///
-    /// Default value is true.
-    pub fn set_auto_reconnect(&mut self, auto_reconnect_enabled: bool) { self.req.set_auto_reconnect(auto_reconnect_enabled) }
-
-    /// Broadcasts an enumerate request. All devices will respond with an enumerate event.
-    pub fn enumerate(&self) { self.req.enumerate() }
-
-    /// This receiver receives enumerate events, as described [here](crate::ip_connection::EnumerateResponse).
-    ///
-    pub fn get_enumerate_callback_receiver(&self) -> ConvertingCallbackReceiver<EnumerateResponse> {
-        self.req.get_enumerate_callback_receiver()
-    }
-
-    /// Performs an authentication handshake with the connected Brick Daemon or WIFI/Ethernet Extension.
-    /// If the handshake succeeds the connection switches from non-authenticated to authenticated state
-    /// and communication can continue as normal. If the handshake fails then the connection gets closed.
-    /// Authentication can fail if the wrong secret was used or if authentication is not enabled at all
-    /// on the Brick Daemon or the WIFI/Ethernet Extension.
-    ///
-    /// See the authentication tutorial for more information.
-    ///
-    /// New in version 2.1.0.
-    pub fn authenticate(&self, secret: &str) -> Result<ConvertingReceiver<()>, AuthenticateError> { self.req.authenticate(secret) }
-}
+impl std::error::Error for AuthenticateError {}
