@@ -1,20 +1,13 @@
 //! Generic device functionality which is used by all bricks and bricklets.
 
-use std::{
-    error::Error,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::time::Duration;
 
 use futures_core::Stream;
-use tokio::time::timeout;
 
 use crate::{
     base58::Base58,
-    converting_receiver::BrickletRecvTimeoutError,
     error::TinkerforgeError,
     ip_connection::async_io::{AsyncIpConnection, PacketData},
-    low_level_traits::{LowLevelRead, LowLevelWrite},
 };
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -42,7 +35,6 @@ pub(crate) struct Device {
     pub response_expected: [ResponseExpectedFlag; 256],
     pub internal_uid: u32,
     pub connection: AsyncIpConnection,
-    pub high_level_locks: Vec<Arc<Mutex<()>>>,
 }
 
 /// This error is returned if the response expected status was queried for an unknown function.
@@ -89,25 +81,16 @@ impl std::fmt::Display for SetResponseExpectedError {
 }
 
 impl Device {
-    pub(crate) fn new(
-        api_version: [u8; 3],
-        uid: &str,
-        connection: AsyncIpConnection,
-        high_level_function_count: u8,
-    ) -> Device {
+    pub(crate) fn new(api_version: [u8; 3], uid: &str, connection: AsyncIpConnection) -> Device {
         match uid.base58_to_u32() {
             Ok(internal_uid) => Device {
                 api_version,
                 internal_uid,
                 response_expected: [ResponseExpectedFlag::InvalidFunctionId; 256],
-                high_level_locks: vec![
-                    Arc::new(Mutex::new(()));
-                    high_level_function_count as usize
-                ],
                 connection,
             },
             //FIXME: (breaking change) Don't panic here, return a Result instead.
-            Err(e) => panic!("UID {} could not be parsed: {}", uid, e.description()),
+            Err(e) => panic!("UID {} could not be parsed: {}", uid, e),
         }
     }
 
@@ -184,123 +167,5 @@ impl Device {
         self.connection
             .get(self.internal_uid, function_id, payload, DEFAULT_TIMEOUT)
             .await
-    }
-
-    pub(crate) fn set_high_level<
-        PayloadT,
-        OutputT,
-        LlwT: LowLevelWrite<OutputT>,
-        ClosureT: FnMut(usize, usize, &[PayloadT]) -> Result<LlwT, BrickletRecvTimeoutError>,
-    >(
-        &self,
-        high_level_function_idx: u8,
-        payload: &[PayloadT],
-        max_payload_len: usize,
-        chunk_len: usize,
-        low_level_closure: &mut ClosureT,
-    ) -> Result<(usize, OutputT), BrickletRecvTimeoutError> {
-        if payload.len() > max_payload_len {
-            return Err(BrickletRecvTimeoutError::InvalidParameter);
-        }
-
-        let length = payload.len();
-
-        let mut chunk_offset = 0;
-        {
-            let _lock_guard = self.high_level_locks[high_level_function_idx as usize]
-                .lock()
-                .unwrap();
-            if length == 0 {
-                match low_level_closure(length, chunk_offset, &[]) {
-                    Ok(low_level_result) => {
-                        return Ok((
-                            low_level_result.ll_message_written(),
-                            low_level_result.get_result(),
-                        ))
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
-            let mut written_sum = 0;
-            loop {
-                match low_level_closure(
-                    length,
-                    chunk_offset,
-                    &payload[chunk_offset..std::cmp::min(chunk_offset + chunk_len, length)],
-                ) {
-                    Ok(low_level_result) => {
-                        let written = low_level_result.ll_message_written();
-                        let output = low_level_result.get_result();
-                        written_sum += written;
-                        if written < chunk_len {
-                            return Ok((written_sum, output));
-                        }
-                        chunk_offset += chunk_len;
-                        if chunk_offset >= length {
-                            return Ok((written_sum, output));
-                        }
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
-        }
-    }
-
-    pub(crate) fn get_high_level<
-        PayloadT: Default + Clone + Copy,
-        OutputT,
-        LlrT: LowLevelRead<PayloadT, OutputT>,
-        ClosureT: FnMut() -> Result<LlrT, BrickletRecvTimeoutError>,
-    >(
-        &self,
-        high_level_function_idx: u8,
-        low_level_closure: &mut ClosureT,
-    ) -> Result<(Vec<PayloadT>, OutputT), BrickletRecvTimeoutError> {
-        let mut chunk_offset = 0;
-        {
-            let _lock_guard = self.high_level_locks[high_level_function_idx as usize]
-                .lock()
-                .unwrap();
-            let mut result = low_level_closure()?;
-            let mut out_of_sync = result.ll_message_chunk_offset() != 0;
-            let message_length = result.ll_message_length();
-
-            if !out_of_sync {
-                let mut buf = vec![PayloadT::default(); message_length];
-                let first_read_length = std::cmp::min(
-                    result.ll_message_chunk_data().len(),
-                    message_length - chunk_offset,
-                );
-                buf[chunk_offset..chunk_offset + first_read_length]
-                    .copy_from_slice(&result.ll_message_chunk_data()[0..first_read_length]);
-                chunk_offset += first_read_length;
-                while chunk_offset < message_length {
-                    result = low_level_closure()?;
-                    out_of_sync = result.ll_message_chunk_offset() != chunk_offset
-                        || result.ll_message_length() != message_length;
-                    if out_of_sync {
-                        break;
-                    }
-
-                    let read_length = std::cmp::min(
-                        result.ll_message_chunk_data().len(),
-                        message_length - chunk_offset,
-                    );
-                    buf[chunk_offset..chunk_offset + read_length]
-                        .copy_from_slice(&result.ll_message_chunk_data()[0..read_length]);
-                    chunk_offset += read_length;
-                }
-                if !out_of_sync {
-                    return Ok((buf, result.get_result()));
-                }
-            }
-
-            assert!(out_of_sync);
-            while chunk_offset + result.ll_message_chunk_data().len() < message_length {
-                chunk_offset += result.ll_message_chunk_data().len();
-                result = low_level_closure()?;
-            }
-            Err(BrickletRecvTimeoutError::MalformedPacket)
-        }
     }
 }

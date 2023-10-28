@@ -1,5 +1,4 @@
 //! The IP Connection manages the communication between the API bindings and the Brick Daemon or a WIFI/Ethernet Extension.
-use std::io::Write;
 use std::str;
 
 use crate::byte_converter::{FromByteSlice, ToBytes};
@@ -17,7 +16,6 @@ pub mod async_io {
             broadcast::{self, Receiver},
             Mutex,
         },
-        task::JoinHandle,
     };
     use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
     use tokio_stream::{wrappers::BroadcastStream, Stream, StreamExt};
@@ -94,7 +92,7 @@ pub mod async_io {
     struct InnerAsyncIpConnection {
         write_stream: WriteHalf<TcpStream>,
         receiver: Receiver<PacketData>,
-        thread: JoinHandle<()>,
+        //thread: JoinHandle<()>,
         seq_num: u8,
     }
 
@@ -103,13 +101,14 @@ pub mod async_io {
             let socket = TcpStream::connect(addr).await?;
             let (mut rd, write_stream) = io::split(socket);
             let (enum_tx, receiver) = broadcast::channel(16);
-            let thread = tokio::spawn(async move {
+            //let thread =
+            tokio::spawn(async move {
                 loop {
                     let mut header_buffer = Box::new([0; PacketHeader::SIZE]);
                     match rd.read_exact(header_buffer.deref_mut()).await {
                         Ok(8) => {}
-                        Ok(n) => panic!("Unexpected read count: {n}"),
-                        Err(e) => panic!("Error from socket: {e}"),
+                        Ok(n) => panic!("Unexpected read count: {}",n),
+                        Err(e) => panic!("Error from socket: {}",e),
                     };
                     let header = PacketHeader::from_le_byte_slice(header_buffer.deref());
                     let body_size = header.length as usize - PacketHeader::SIZE;
@@ -117,9 +116,9 @@ pub mod async_io {
                     match rd.read_exact(body.deref_mut()).await {
                         Ok(l) if l == body_size => {}
                         Ok(l) => {
-                            panic!("Unexpected body size: {l}")
+                            panic!("Unexpected body size: {}",l)
                         }
-                        Err(e) => panic!("Error from socket: {e}"),
+                        Err(e) => panic!("Error from socket: {}",e),
                     }
                     //println!("Header: {header:?}");
                     let packet_data = PacketData { header, body };
@@ -128,7 +127,7 @@ pub mod async_io {
             });
             Ok(Self {
                 write_stream,
-                thread,
+                //thread,
                 seq_num: 1,
                 receiver,
             })
@@ -206,16 +205,16 @@ pub mod async_io {
             payload: &[u8],
             timeout: Duration,
         ) -> Result<PacketData, TinkerforgeError> {
-            let seq = self.next_seq();
-            let stream = BroadcastStream::new(self.receiver.resubscribe())
-                .filter(Self::filter_response(uid, function_id, seq))
-                .timeout(timeout);
-            tokio::pin!(stream);
             let request = Request::Get {
                 uid,
                 function_id,
                 payload,
             };
+            let seq = self.next_seq();
+            let stream = BroadcastStream::new(self.receiver.resubscribe())
+                .filter(Self::filter_response(uid, function_id, seq))
+                .timeout(timeout);
+            tokio::pin!(stream);
             self.send_packet(&request, seq, true).await?;
             Ok(stream
                 .next()
@@ -284,7 +283,7 @@ pub mod async_io {
         pub fn header(&self) -> PacketHeader {
             self.header
         }
-        pub fn body(&self) -> &Box<[u8]> {
+        pub fn body(&self) -> &[u8] {
             &self.body
         }
     }
@@ -407,7 +406,7 @@ impl ToBytes for PacketHeader {
     }
 }
 
-const MAX_PACKET_SIZE: usize = PacketHeader::SIZE + 64 + 8; //header + payload + optional data
+//const MAX_PACKET_SIZE: usize = PacketHeader::SIZE + 64 + 8; //header + payload + optional data
 
 /// Type of enumeration of a device.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
@@ -474,10 +473,10 @@ impl FromByteSlice for EnumerateResponse {
         EnumerateResponse {
             uid: str::from_utf8(&bytes[0..8])
                 .expect("Could not convert to string. This is a bug in the rust bindings.")
-                .replace("\u{0}", ""),
+                .replace('\u{0}', ""),
             connected_uid: str::from_utf8(&bytes[8..16])
                 .expect("Could not convert to string. This is a bug in the rust bindings.")
-                .replace("\u{0}", ""),
+                .replace('\u{0}', ""),
             position: bytes[16] as char,
             hardware_version: [bytes[17], bytes[18], bytes[19]],
             firmware_version: [bytes[20], bytes[21], bytes[22]],
@@ -489,21 +488,6 @@ impl FromByteSlice for EnumerateResponse {
     fn bytes_expected() -> usize {
         26
     }
-}
-
-fn read_into_packet_buffer(
-    read_buffer: &mut Vec<u8>,
-    packet_buffer: &mut Vec<u8>,
-    bytes_to_read: usize,
-    read_buffer_level: &mut usize,
-) {
-    //packet_buffer.copy_from_slice(&read_buffer[0..bytes_to_read]);
-    packet_buffer.extend(read_buffer.drain(0..bytes_to_read));
-    //for i in 0..bytes_to_read {
-    //    packet_buffer.push(read_buffer[i]);
-    //}
-    read_buffer.extend_from_slice(&vec![0u8; bytes_to_read]);
-    *read_buffer_level -= bytes_to_read;
 }
 
 /// This enum specifies the reason of a successful connection.
@@ -562,7 +546,7 @@ impl std::fmt::Display for ConnectError {
                 "{}",
                 match self {
                     ConnectError::CouldNotParseIpAddress(addr) => format!("Could not parse ip address: {}", addr),
-                    ConnectError::CouldNotResolveIpAddress => format!("Could not resolve any of the given ip addresses"),
+                    ConnectError::CouldNotResolveIpAddress => "Could not resolve any of the given ip addresses".to_owned(),
                     ConnectError::IoError(_e) => unreachable!("Could not query io error description. This is a bug in the rust bindings."),
                     ConnectError::AlreadyConnected => "Already connected. Disconnect before connecting somewhere else.".to_owned(),
                     ConnectError::CouldNotSetNoDelayFlag =>

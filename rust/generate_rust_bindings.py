@@ -98,8 +98,11 @@ class RustBindingsDevice(rust_common.RustDevice):
         return """{header}
 
 //! {description}
+#[allow(unused_imports)]
 use futures_core::Stream;
+#[allow(unused_imports)]
 use tokio_stream::StreamExt;
+#[allow(unused_imports)]
 use crate::{{
 	byte_converter::*,
 	error::TinkerforgeError,
@@ -367,7 +370,7 @@ pub struct {name} {{
 	/// Creates an object with the unique device ID `uid`. This object can then be used after the IP Connection `ip_connection` is connected.
 	pub fn new(uid: &str, connection: AsyncIpConnection) -> {name} {{
 		let mut result = {name} {{
-            device: Device::new([2, 0, 10], uid, connection, 0),
+            device: Device::new([2, 0, 10], uid, connection),
         }};
 		{response_expected_config}
 		result
@@ -443,7 +446,7 @@ pub struct {name} {{
                 doc = packet.get_rust_formatted_doc()
             returnType = self.returnTypes[packet];
             if returnType == "()":
-                bodyMap = "|p|()"
+                bodyMap = "|_p|()"
             else:
                 if returnType.startswith("["):
                     convertType = """<{type}>""".format(type=returnType)
@@ -468,6 +471,7 @@ pub struct {name} {{
         function_template = """{description}\n\tpub async fn {name}(&mut self{params}) -> {returnType} {{
 		let {mut}payload = [0;{byte_count}];
 		{fill_payload}
+		#[allow(unused_variables)]
 		let result = self.device.{fn}(u8::from({fun_enum}::{fn_id}), &payload).await?{unwrap_result};
 		{returnLine}
 	}}"""
@@ -920,7 +924,7 @@ impl FromByteSlice for [bool; {count}] {{
 
 //! Rust API bindings for [Tinkerforge](https://www.tinkerforge.com) bricks and bricklets.
 //! See also the additional documentation and examples [here](https://www.tinkerforge.com/en/doc/Software/API_Bindings_Rust.html)
-
+#[allow(unused_imports)]
 mod bindings;
 pub use crate::bindings::*;
 pub mod base58;
