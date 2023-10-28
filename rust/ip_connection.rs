@@ -107,8 +107,8 @@ pub mod async_io {
                     let mut header_buffer = Box::new([0; PacketHeader::SIZE]);
                     match rd.read_exact(header_buffer.deref_mut()).await {
                         Ok(8) => {}
-                        Ok(n) => panic!("Unexpected read count: {}",n),
-                        Err(e) => panic!("Error from socket: {}",e),
+                        Ok(n) => panic!("Unexpected read count: {}", n),
+                        Err(e) => panic!("Error from socket: {}", e),
                     };
                     let header = PacketHeader::from_le_byte_slice(header_buffer.deref());
                     let body_size = header.length as usize - PacketHeader::SIZE;
@@ -116,9 +116,9 @@ pub mod async_io {
                     match rd.read_exact(body.deref_mut()).await {
                         Ok(l) if l == body_size => {}
                         Ok(l) => {
-                            panic!("Unexpected body size: {}",l)
+                            panic!("Unexpected body size: {}", l)
                         }
-                        Err(e) => panic!("Error from socket: {}",e),
+                        Err(e) => panic!("Error from socket: {}", e),
                     }
                     //println!("Header: {header:?}");
                     let packet_data = PacketData { header, body };
@@ -251,7 +251,7 @@ pub mod async_io {
         ) -> Result<(), TinkerforgeError> {
             let header = request.get_header(response_expected, seq);
             assert!(header.length < 72);
-            let mut result = vec![0; header.length as usize + 8];
+            let mut result = vec![0; header.length as usize];
             result[0..4].copy_from_slice(&u32::to_le_byte_vec(header.uid));
             result[4] = header.length;
             result[5] = header.function_id;
