@@ -540,7 +540,10 @@ pub struct {name} {{
                 unwrap = ""
             else:
                 fn = "set"
-                unwrap = ".unwrap()"
+                if foundReturnType == "()":
+                    unwrap=""
+                else:
+                    unwrap = ".unwrap()"
 
             byte_count = sum([param.get_size() for param in packet_params])
 
