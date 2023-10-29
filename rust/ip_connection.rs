@@ -250,7 +250,7 @@ pub mod async_io {
             response_expected: bool,
         ) -> Result<(), TinkerforgeError> {
             let header = request.get_header(response_expected, seq);
-            assert!(header.length < 72);
+            assert!(header.length <= 72);
             let mut result = vec![0; header.length as usize];
             result[0..4].copy_from_slice(&u32::to_le_byte_vec(header.uid));
             result[4] = header.length;
