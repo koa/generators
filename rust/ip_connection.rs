@@ -4,11 +4,14 @@ use std::str;
 use crate::byte_converter::{FromByteSlice, ToBytes};
 
 pub mod async_io {
-    use std::{borrow::BorrowMut, sync::Arc};
-    use std::ops::{Deref, DerefMut};
-    use std::time::Duration;
+    use std::{
+        borrow::BorrowMut,
+        ops::{Deref, DerefMut},
+        sync::Arc,
+        time::Duration,
+    };
 
-    use log::{info, warn};
+    use log::warn;
     use tokio::{
         io::{self, AsyncReadExt, AsyncWriteExt, WriteHalf},
         net::{TcpStream, ToSocketAddrs},
@@ -19,11 +22,7 @@ pub mod async_io {
     };
     use tokio_stream::{
         Stream,
-        StreamExt,
-        wrappers::{
-            BroadcastStream,
-            errors::BroadcastStreamRecvError,
-        },
+        StreamExt, wrappers::{BroadcastStream, errors::BroadcastStreamRecvError},
     };
 
     use crate::{
@@ -178,7 +177,9 @@ pub mod async_io {
                             Some(Some(p))
                         } else if header.function_id == 253 {
                             let enum_paket = EnumerateResponse::from_le_byte_slice(p.body());
-                            if enum_paket.enumeration_type == EnumerationType::Disconnected && Some(uid) == enum_paket.uid.base58_to_u32().ok() {
+                            if enum_paket.enumeration_type == EnumerationType::Disconnected
+                                && Some(uid) == enum_paket.uid.base58_to_u32().ok()
+                            {
                                 // device is disconnected -> end stream
                                 None
                             } else {

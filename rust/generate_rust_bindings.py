@@ -370,7 +370,7 @@ pub struct {name} {{
 	/// Creates an object with the unique device ID `uid`. This object can then be used after the IP Connection `ip_connection` is connected.
 	pub fn new(uid: &str, connection: AsyncIpConnection) -> {name} {{
 		let mut result = {name} {{
-            device: Device::new([2, 0, 10], uid, connection),
+            device: Device::new([2, 0, 10], uid, connection, Self::DEVICE_DISPLAY_NAME),
         }};
 		{response_expected_config}
 		result
