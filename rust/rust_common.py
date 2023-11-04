@@ -306,7 +306,7 @@ class RustElement(common.Element):
                 if self.get_direction() == 'in':
                     return "&[{type}]".format(type=element_type)
                 else:
-                    return "Vec<{type}>".format(type=element_type)
+                    return "Box<[{type}]>".format(type=element_type)
 
         return element_type
 

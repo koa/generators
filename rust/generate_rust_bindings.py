@@ -518,8 +518,12 @@ pub struct {name} {{
             packet_params = packet.get_elements(direction='in')
             for p in packet_params:
                 packet_param_types.add(p.get_rust_type())
-            params = ["{name}: {type}".format(name=param.get_rust_name(), type=param.get_rust_type()) for param in
-                      packet_params]
+            params = []
+            for packet_param in packet_params:
+                if packet_param.get_rust_type().startswith("["):
+                    params.append("{name}: &{type}".format(name=packet_param.get_rust_name(), type=packet_param.get_rust_type()))
+                else:
+                    params.append("{name}: {type}".format(name=packet_param.get_rust_name(), type=packet_param.get_rust_type()))
             foundReturnType = self.returnTypes[packet]
             returnType = "Result<{type}, TinkerforgeError>".format(type=foundReturnType)
             if foundReturnType == "()":
@@ -560,8 +564,8 @@ pub struct {name} {{
                                                                      to=byte_offset + size))
                 else:
                     fill_payload.append(
-                        "payload[{first_byte}..{to}].copy_from_slice(&<{type}>::to_le_byte_vec({param_name}));".format(
-                            param_name=param.get_rust_name(), type=param.get_rust_type(), first_byte=byte_offset,
+                        "{param_name}.write_to_slice(&mut payload[{first_byte}..{to}]);".format(
+                            param_name=param.get_rust_name(), first_byte=byte_offset,
                             to=byte_offset + size))
                 byte_offset += size
 
