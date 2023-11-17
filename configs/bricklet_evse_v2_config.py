@@ -71,7 +71,7 @@ com['constant_groups'].append({
 'constants': [('AC1 NLive AC2 NLive', 0),
               ('AC1 Live AC2 NLive', 1),
               ('AC1 NLive AC2 Live', 2),
-              ('AC1 Live AC2 Live', 3)]
+              ('AC1 Live AC2 Live', 3)] # Different in V3
 })
 
 com['constant_groups'].append({
@@ -109,14 +109,30 @@ com['constant_groups'].append({
               ('Unconfigured', 8)]
 })
 
+"""
+DC fault current state
+state & 0b0000_0111 = [('Normal Condition', 0),
+                       ('6 MA DC Error', 1),
+                       ('System Error', 2),
+                       ('Unknown Error', 3),
+                       ('Calibration Error', 4),
+                       ('20 MA AC Error', 5),
+                       ('6 MA AC And 20 MA AC Error', 6)]
+state & 0b0011_1000 = (state & 0b0000_0111 != 4 (calibration error)) ?
+                        pins (x6 x30 err) :
+                        calibration error code
+state & 0b0100_0000 = sensor type (0 old, 1 new)
+"""
 com['constant_groups'].append({
 'name': 'DC Fault Current State',
 'type': 'uint8',
 'constants': [('Normal Condition', 0),
-              ('6 MA Error', 1),
+              ('6 MA DC Error', 1),
               ('System Error', 2),
               ('Unknown Error', 3),
-              ('Calibration Error', 4)]
+              ('Calibration Error', 4),
+              ('20 MA AC Error', 5),
+              ('6 MA AC And 20 MA AC Error', 6)]
 })
 
 com['constant_groups'].append({
@@ -186,6 +202,18 @@ com['constant_groups'].append({
 })
 
 
+"""
+contactor state
+state & 0b0000_0001 = contactor state  N+L1 (0 is not switched, 1 is switched)
+state & 0b0000_0010 = contactor state L2+L3 (0 is not switched, 1 is switched)
+state & 0b0000_0100 = pe connected (0 not connected 1 connected)
+state & 0b0000_1000 = contactor control  N+L1 (0 want not switched, 1 want switched)
+state & 0b0001_0000 = contactor control L2+L3 (0 want not switched, 1 want switched)
+
+contactor error
+error & 0b0000_0001 = pe error (0 ok, 1 error -> !(state & 0x04))
+error & 0b1111_1110 = error state (0 ok, else earror -> contactor control/state mismatch)
+"""
 com['packets'].append({
 'type': 'function',
 'name': 'Get State',
@@ -231,7 +259,7 @@ TODO
 })
 
 """
-GPIO:
+GPIO WARP V2:
 	response->gpio[0] = (get_bit(port0, 0)  << 0) | //  0: Config Jumper 0
 	                    (get_bit(port0, 1)  << 1) | //  1: Motor Fault
 	                    (get_bit(port0, 3)  << 2) | //  2: DC Error
@@ -254,6 +282,30 @@ GPIO:
 	                    (get_bit(port4, 4)  << 1) | // 17: DC X6
 	                    (get_bit(port4, 5)  << 2) | // 18: DC X30
 	                    (get_bit(port4, 6)  << 3);  // 19: LED
+
+GPIO WARP V3:
+    response->gpio[0] = (get_bit(port0, 0)   << 0) | //  0: DC X30
+                        (get_bit(port0, 1)   << 1) | //  1: DC X6
+                        (get_bit(port0, 3)   << 2) | //  2: DC Error
+                        (get_bit(port0, 5)   << 3) | //  3: DC Test
+                        (get_bit(port0, 6)   << 4) | //  4: Status LED
+                        (get_bit(port0, 12)  << 5) | //  5: Switch
+                        (get_bit(port1, 0)   << 6) | //  6: LED R
+                        (get_bit(port1, 2)   << 7);  //  7: LED B
+
+    response->gpio[1] = (get_bit(port1, 3)   << 0) | //  8: LED G
+                        (get_bit(port1, 4)   << 1) | //  9: CP PWM
+                        (get_bit(port1, 5)   << 2) | // 10: Contactor 1
+                        (get_bit(port1, 6)   << 3) | // 11: Contactor 0
+                        (get_bit(port2, 6)   << 4) | // 12: Contactor 1 FB
+                        (get_bit(port2, 7)   << 5) | // 13: Contactor 0 FB
+                        (get_bit(port2, 8)   << 6) | // 14: PE Check
+                        (get_bit(port2, 9)   << 7);  // 15: Config Jumper 1
+
+    response->gpio[2] = (get_bit(port4, 4)   << 6) | // 16: CP Disconnect
+                        (get_bit(port4, 5)   << 7) | // 17: Config Jumper 0
+                        (get_bit(port4, 6)   << 0) | // 18: Enable
+                        (get_bit(port4, 7)   << 1);  // 19: Version Detection
 """
 com['packets'].append({
 'type': 'function',
@@ -619,7 +671,10 @@ com['packets'].append({
 'type': 'function',
 'name': 'Get Indicator LED',
 'elements': [('Indication', 'int16', 1, 'out'),
-             ('Duration', 'uint16', 1, 'out')],
+             ('Duration', 'uint16', 1, 'out'),
+             ('Color H', 'uint16', 1, 'out'),
+             ('Color S', 'uint8', 1, 'out'),
+             ('Color V', 'uint8', 1, 'out')],
 'since_firmware': [1, 0, 0],
 'doc': ['bf', {
 'en':
@@ -638,6 +693,9 @@ com['packets'].append({
 'name': 'Set Indicator LED',
 'elements': [('Indication', 'int16', 1, 'in'), #-1 = led controled by EVSE, 0 = Off, 255 = on, 1-254 = pwm, 1001 = ack indication, 1002 = nack indication, 1003 = nag indication
              ('Duration', 'uint16', 1, 'in'), # max 2^16 ms
+             ('Color H', 'uint16', 1, 'in'), # Color V=0 => automatic color. In EVSE V2 always blue
+             ('Color S', 'uint8', 1, 'in'),
+             ('Color V', 'uint8', 1, 'in'),
              ('Status', 'uint8', 1, 'out')], # OK = 0, Sonst nicht OK wegen X (Blinking=2, Flickering=3, Breathing=4)
 'since_firmware': [1, 0, 0],
 'doc': ['bf', {
@@ -818,6 +876,9 @@ com['packets'].append({
              ('Output Configuration', 'uint8', 1, 'out', {'constant_group': 'Output'}),
              ('Indication', 'int16', 1, 'out'),
              ('Duration', 'uint16', 1, 'out'),
+             ('Color H', 'uint16', 1, 'out'),
+             ('Color S', 'uint8', 1, 'out'),
+             ('Color V', 'uint8', 1, 'out'),
              ('Button Configuration', 'uint8', 1, 'out', {'constant_group': 'Button Configuration'}),
              ('Button Press Time', 'uint32', 1, 'out'),
              ('Button Release Time', 'uint32', 1, 'out'),
@@ -825,6 +886,10 @@ com['packets'].append({
              ('EV Wakeup Enabled', 'bool', 1, 'out'),
              ('Control Pilot Disconnect', 'bool', 1, 'out'),
              ('Boost Mode Enabled', 'bool', 1, 'out'),
+             ('Temperature', 'int16', 1, 'out'),
+             ('Phases Current', 'uint8', 1, 'out'),  # Always three-phase for EVSE V2
+             ('Phases Requested', 'uint8', 1, 'out'),
+             ('Phases Status', 'uint8', 1, 'out'),
 ],
 'since_firmware': [1, 0, 0],
 'doc': ['bf', {
@@ -931,6 +996,59 @@ com['packets'].append({
 'type': 'function',
 'name': 'Set GP Output',
 'elements': [('GP Output', 'uint8', 1, 'in', {'constant_group': 'Output'})], # Bootup-Default set by Set GPIO Configuration
+'since_firmware': [1, 0, 0],
+'doc': ['bf', {
+'en':
+"""
+TODO
+""",
+'de':
+"""
+TODO
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'function',
+'name': 'Get Temperature',
+'elements': [('Temperature', 'int16', 1, 'out')], # Returns 0 in EVSE V2
+'since_firmware': [1, 0, 0],
+'doc': ['bf', {
+'en':
+"""
+TODO
+""",
+'de':
+"""
+TODO
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'function',
+'name': 'Set Phase Control',
+'elements': [('Phases', 'uint8', 1, 'in')], # No effect in EVSE V2
+'since_firmware': [1, 0, 0],
+'doc': ['bf', {
+'en':
+"""
+TODO
+""",
+'de':
+"""
+TODO
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'function',
+'name': 'Get Phase Control',
+'elements': [('Phases Current', 'uint8', 1, 'out'),  # Always three-phase EVSE V2
+             ('Phases Requested', 'uint8', 1, 'out'),
+             ('Phases Status', 'uint8', 1, 'out')],
 'since_firmware': [1, 0, 0],
 'doc': ['bf', {
 'en':
