@@ -1,15 +1,15 @@
 [package]
-name = "tinkerforge"
-version = {version}
+name = "tinkerforge-async"
+version = "0.0.1"
 authors = ["Erik Fleckstein <erik@tinkerforge.com>"]
 edition = "2018"
-rust = "1.41"
-description = "Rust API bindings for https://www.tinkerforge.com Bricks and Bricklets."
+rust = "1.74.1"
+description = "Async Rust API bindings for https://www.tinkerforge.com Bricks and Bricklets, based on Version: {version}"
 license = "CC0-1.0 OR MIT OR Apache-2.0"
 homepage = "https://tinkerforge.com"
-repository = "https://github.com/Tinkerforge/generators"
+repository = "https://github.com/koa/generators"
 readme = "readme.md"
-keywords = ["api", "tinkerforge" ,"bindings"]
+keywords = ["api", "tinkerforge" ,"bindings", "tokio"]
 categories = ["api-bindings"] 
 exclude = [
     "examples/*",

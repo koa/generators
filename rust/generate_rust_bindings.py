@@ -915,7 +915,7 @@ impl FromByteSlice for [bool; {count}] {{
     def write_cargo_toml(self):
         common.specialize_template(os.path.join(self.get_root_dir(), "Cargo.toml.template"),
                                    os.path.join(self.get_bindings_dir(), "Cargo.toml"),
-                                   {"{version}": '"' + ".".join(list(self.get_changelog_version())) + '"'})
+                                   {"{version}": ".".join(list(self.get_changelog_version())) })
 
     def write_lib_rs(self):
         template = """#![forbid(unsafe_code)]
