@@ -4,7 +4,9 @@ use std::{
     fmt::{Display, Formatter},
 };
 
-const ALPHABET: &str = "123456789abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ";
+use const_str::to_char_array;
+
+const ALPHABET: [char; 58] = to_char_array!("123456789abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ");
 
 const ERROR_INVALID_CHAR: &str = "UID contains an invalid character";
 const ERROR_TOO_BIG: &str = "UID is too big to fit into a u64";
@@ -16,7 +18,7 @@ pub enum Base58Error {
     ///Is returned if the parse finds an invalid character. Contains the character and it's index in the string.
     InvalidCharacter,
     UidTooBig,
-    UidEmpty
+    UidEmpty,
 }
 
 impl Display for Base58Error {
@@ -24,7 +26,7 @@ impl Display for Base58Error {
         match *self {
             Base58Error::InvalidCharacter => write!(f, "{}", ERROR_INVALID_CHAR),
             Base58Error::UidTooBig => write!(f, "{}", ERROR_TOO_BIG),
-            Base58Error::UidEmpty => write!(f, "{}", ERROR_EMPTY)
+            Base58Error::UidEmpty => write!(f, "{}", ERROR_EMPTY),
         }
     }
 }
@@ -34,7 +36,7 @@ impl Error for Base58Error {
         match *self {
             Base58Error::InvalidCharacter => ERROR_INVALID_CHAR,
             Base58Error::UidTooBig => ERROR_TOO_BIG,
-            Base58Error::UidEmpty => ERROR_EMPTY
+            Base58Error::UidEmpty => ERROR_EMPTY,
         }
     }
 }
@@ -48,42 +50,26 @@ pub trait Base58 {
 impl Base58 for str {
     fn base58_to_u32(&self) -> Result<u32, Base58Error> {
         let mut result_u64: u64 = 0;
-        let radix: u64 = ALPHABET.len() as u64;
-        let mut digit: u32 = 0;
-        // Remove 1s from the left as they are leading zeros in base 58
-        let filtered = self.as_bytes().iter().skip_while(|c| **c == '1' as u8).collect::<Vec<&u8>>();
-        for (_idx, &&character) in filtered.iter().enumerate().rev() {
-            match ALPHABET.as_bytes().iter().enumerate().find(|(_i, c)| **c == character).map(|(i, _c)| i) {
+        for character in self.chars() {
+            match ALPHABET.iter().enumerate().find(|(_, c)| **c == character).map(|(i, _)| i) {
                 None => return Err(Base58Error::InvalidCharacter),
                 Some(i) => {
-                    if digit > 0 && radix.pow(digit - 1) > (u64::max_value() / radix) {
-                        return Err(Base58Error::UidTooBig); //pow overflow
-                    }
-                    let opt = radix.pow(digit).checked_mul(i as u64);
-                    if opt.is_none() {
-                        return Err(Base58Error::UidTooBig); //mul overflow
-                    }
-                    if u64::max_value() - opt.unwrap() < result_u64 {
-                        return Err(Base58Error::UidTooBig); //add overflow
-                    }
-                    result_u64 += opt.unwrap();
+                    result_u64 = result_u64.checked_mul(ALPHABET.len() as u64).ok_or(Base58Error::UidTooBig)?.checked_add(i as u64).ok_or(Base58Error::UidTooBig)?;
                 }
             }
-            digit += 1;
-        }
+        };
 
         let result = if result_u64 > u32::max_value().into() {
-                let value1 = result_u64 & 0xFF_FF_FF_FF;
-                let value2 = (result_u64 >> 32) & 0xFF_FF_FF_FF;
-                ((value1 & 0x00_00_0F_FF)
-                |(value1 & 0x0F_00_00_00) >> 12
-                |(value2 & 0x00_00_00_3F) << 16
-                |(value2 & 0x00_0F_00_00) << 6
-                |(value2 & 0x3F_00_00_00) << 2) as u32
-            }
-            else {
-                result_u64 as u32
-            };
+            let value1 = result_u64 & 0xFF_FF_FF_FF;
+            let value2 = (result_u64 >> 32) & 0xFF_FF_FF_FF;
+            ((value1 & 0x00_00_0F_FF)
+                | (value1 & 0x0F_00_00_00) >> 12
+                | (value2 & 0x00_00_00_3F) << 16
+                | (value2 & 0x00_0F_00_00) << 6
+                | (value2 & 0x3F_00_00_00) << 2) as u32
+        } else {
+            result_u64 as u32
+        };
         if result == 0 {
             Err(Base58Error::UidEmpty)
         } else {
@@ -93,5 +79,39 @@ impl Base58 for str {
 }
 
 impl Base58 for String {
-    fn base58_to_u32(&self) -> Result<u32, Base58Error> { self.as_str().base58_to_u32() }
+    fn base58_to_u32(&self) -> Result<u32, Base58Error> {
+        self.as_str().base58_to_u32()
+    }
+}
+
+pub fn u32_to_base58(mut id: u32) -> Box<str> {
+    let radix = ALPHABET.len() as u32;
+    // u32::MAX needs 6 digits
+    let mut buffer = [0 as char; 6];
+    let mut ptr = 0;
+    while id > 0 {
+        let digit = id % radix;
+        buffer[ptr] = ALPHABET[digit as usize];
+        id = id / radix;
+        ptr += 1;
+    }
+    buffer[..ptr].iter().rev().collect::<String>().into_boxed_str()
+}
+
+#[cfg(test)]
+mod test {
+    use crate::base58::{Base58, u32_to_base58};
+
+    #[test]
+    fn test_parse_address() {
+        assert_eq!(130221, "EHc".base58_to_u32().unwrap());
+        assert_eq!(130221, "111111111111111111111111111111111111111111111111EHc".base58_to_u32().unwrap());
+        assert_eq!(u32::MAX, "7xwQ9g".base58_to_u32().unwrap());
+    }
+
+    #[test]
+    fn test_format_address() {
+        assert_eq!("EHc", &u32_to_base58(130221).to_string());
+        assert_eq!("7xwQ9g", &u32_to_base58(u32::MAX).to_string());
+    }
 }

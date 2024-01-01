@@ -11,7 +11,7 @@ pub mod async_io {
         time::Duration,
     };
 
-    use log::warn;
+    use log::{error, warn};
     use tokio::{
         io::{self, AsyncReadExt, AsyncWriteExt, WriteHalf},
         net::{TcpStream, ToSocketAddrs},
@@ -21,16 +21,16 @@ pub mod async_io {
         },
     };
     use tokio_stream::{
-        wrappers::{errors::BroadcastStreamRecvError, BroadcastStream},
-        Stream, StreamExt,
+        Stream,
+        StreamExt, wrappers::{BroadcastStream, errors::BroadcastStreamRecvError},
     };
 
     use crate::{
         base58::Base58,
         byte_converter::{FromByteSlice, ToBytes},
         error::TinkerforgeError,
-        ip_connection::EnumerationType,
         ip_connection::{EnumerateResponse, PacketHeader},
+        ip_connection::EnumerationType,
     };
 
     #[derive(Debug, Clone)]
@@ -98,7 +98,7 @@ pub mod async_io {
     #[derive(Debug)]
     struct InnerAsyncIpConnection {
         write_stream: WriteHalf<TcpStream>,
-        receiver: Receiver<PacketData>,
+        receiver: Receiver<Option<PacketData>>,
         //thread: JoinHandle<()>,
         seq_num: u8,
     }
@@ -107,29 +107,42 @@ pub mod async_io {
         pub async fn new<T: ToSocketAddrs>(addr: T) -> Result<Self, TinkerforgeError> {
             let socket = TcpStream::connect(addr).await?;
             let (mut rd, write_stream) = io::split(socket);
-            let (enum_tx, receiver) = broadcast::channel(16);
+            let (enum_tx, receiver) = broadcast::channel(512);
             //let thread =
             tokio::spawn(async move {
                 loop {
                     let mut header_buffer = Box::new([0; PacketHeader::SIZE]);
                     match rd.read_exact(header_buffer.deref_mut()).await {
-                        Ok(8) => {}
-                        Ok(n) => panic!("Unexpected read count: {}", n),
-                        Err(e) => panic!("Error from socket: {}", e),
-                    };
-                    let header = PacketHeader::from_le_byte_slice(header_buffer.deref());
-                    let body_size = header.length as usize - PacketHeader::SIZE;
-                    let mut body = vec![0; body_size].into_boxed_slice();
-                    match rd.read_exact(body.deref_mut()).await {
-                        Ok(l) if l == body_size => {}
-                        Ok(l) => {
-                            panic!("Unexpected body size: {}", l)
+                        Ok(8) => {
+                            let header = PacketHeader::from_le_byte_slice(header_buffer.deref());
+                            let body_size = header.length as usize - PacketHeader::SIZE;
+                            let mut body = vec![0; body_size].into_boxed_slice();
+                            match rd.read_exact(body.deref_mut()).await {
+                                Ok(l) if l == body_size => {}
+                                Ok(l) => {
+                                    panic!("Unexpected body size: {}", l)
+                                }
+                                Err(e) => panic!("Error from socket: {}", e),
+                            }
+                            //println!("Header: {header:?}");
+                            let packet_data = PacketData { header, body };
+                            enum_tx
+                                .send(Some(packet_data))
+                                .expect("Cannot process packet");
                         }
-                        Err(e) => panic!("Error from socket: {}", e),
-                    }
-                    //println!("Header: {header:?}");
-                    let packet_data = PacketData { header, body };
-                    enum_tx.send(packet_data).expect("Cannot process packet");
+                        Ok(n) => {
+                            error!("Unexpected read count: {}", n);
+                            enum_tx
+                                .send(None)
+                                .expect("Cannot close connection on read error");
+                        }
+                        Err(e) => {
+                            error!("Error from socket: {}", e);
+                            enum_tx
+                                .send(None)
+                                .expect("Cannot close connection on communication error");
+                        }
+                    };
                 }
             });
             Ok(Self {
@@ -148,8 +161,9 @@ pub mod async_io {
                 function_id: 254,
                 payload: &[],
             };
-            let stream =
-                BroadcastStream::new(self.receiver.resubscribe()).filter_map(|p| match p {
+            let stream = BroadcastStream::new(self.receiver.resubscribe())
+                .map_while(Self::while_some)
+                .filter_map(|p| match p {
                     Ok(p) if p.header.function_id == 253 => {
                         Some(EnumerateResponse::from_le_byte_slice(&p.body))
                     }
@@ -174,6 +188,7 @@ pub mod async_io {
             let seq = self.next_seq();
             if let Some(timeout) = timeout {
                 let stream = BroadcastStream::new(self.receiver.resubscribe())
+                    .map_while(Self::while_some)
                     .filter(Self::filter_response(uid, function_id, seq))
                     .timeout(timeout);
                 self.send_packet(&request, seq, true).await?;
@@ -220,6 +235,7 @@ pub mod async_io {
             };
             let seq = self.next_seq();
             let stream = BroadcastStream::new(self.receiver.resubscribe())
+                .map_while(Self::while_some)
                 .filter(Self::filter_response(uid, function_id, seq))
                 .timeout(timeout);
             tokio::pin!(stream);
@@ -230,6 +246,16 @@ pub mod async_io {
                 .ok_or(TinkerforgeError::NoResponseReceived)?
                 .map_err(|_| TinkerforgeError::NoResponseReceived)??)
         }
+
+        fn while_some(
+            v: Result<Option<PacketData>, BroadcastStreamRecvError>,
+        ) -> Option<Result<PacketData, BroadcastStreamRecvError>> {
+            match v {
+                Ok(None) => None,
+                Ok(Some(p)) => Some(Ok(p)),
+                Err(e) => Some(Err(e)),
+            }
+        }
         pub(crate) async fn callback_stream(
             &mut self,
             uid: u32,
@@ -237,7 +263,7 @@ pub mod async_io {
         ) -> impl Stream<Item = PacketData> {
             BroadcastStream::new(self.receiver.resubscribe())
                 .map_while(move |result| match result {
-                    Ok(p) => {
+                    Ok(Some(p)) => {
                         let header = &p.header;
 
                         if header.uid == uid && header.function_id == function_id {
@@ -256,6 +282,7 @@ pub mod async_io {
                             Some(None)
                         }
                     }
+                    Ok(None) => None,
                     Err(BroadcastStreamRecvError::Lagged(count)) => {
                         warn!("Slow receiver, skipped {count} Packets");
                         Some(None)

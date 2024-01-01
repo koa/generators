@@ -4,8 +4,11 @@ use std::time::Duration;
 use tokio::pin;
 use tokio_stream::StreamExt;
 
-use tinkerforge::ip_connection::{EnumerateResponse, EnumerationType};
-use tinkerforge::ip_connection::async_io::AsyncIpConnection;
+use tinkerforge_async::ip_connection::{
+    async_io::AsyncIpConnection,
+    EnumerateResponse,
+    EnumerationType,
+};
 
 const HOST: &str = "localhost";
 const PORT: u16 = 4223;

@@ -9,7 +9,6 @@ use lazy_static::lazy_static;
 use prometheus::{register_histogram_vec, HistogramVec};
 
 use crate::{
-    base58::Base58,
     error::TinkerforgeError,
     ip_connection::async_io::{AsyncIpConnection, PacketData},
 };
@@ -86,17 +85,13 @@ impl std::fmt::Display for SetResponseExpectedError {
 }
 
 impl Device {
-    pub(crate) fn new(api_version: [u8; 3], uid: &str, connection: AsyncIpConnection, device_display_name: &'static str) -> Device {
-        match uid.base58_to_u32() {
-            Ok(internal_uid) => Device {
-                api_version,
-                internal_uid,
-                response_expected: [ResponseExpectedFlag::InvalidFunctionId; 256],
-                connection,
-                device_display_name,
-            },
-            //FIXME: (breaking change) Don't panic here, return a Result instead.
-            Err(e) => panic!("UID {} could not be parsed: {}", uid, e),
+    pub(crate) fn new(api_version: [u8; 3], internal_uid: u32, connection: AsyncIpConnection, device_display_name: &'static str) -> Device {
+        Device {
+            api_version,
+            internal_uid,
+            response_expected: [ResponseExpectedFlag::InvalidFunctionId; 256],
+            connection,
+            device_display_name,
         }
     }
 
