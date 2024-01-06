@@ -10,6 +10,7 @@ pub mod async_io {
         sync::Arc,
         time::Duration,
     };
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use log::{error, warn};
     use tokio::{
@@ -20,10 +21,7 @@ pub mod async_io {
             Mutex,
         },
     };
-    use tokio_stream::{
-        Stream,
-        StreamExt, wrappers::{BroadcastStream, errors::BroadcastStreamRecvError},
-    };
+    use tokio_stream::{empty, Stream, StreamExt, wrappers::{BroadcastStream, errors::BroadcastStreamRecvError}};
 
     use crate::{
         base58::Base58,
@@ -39,10 +37,7 @@ pub mod async_io {
     }
 
     impl AsyncIpConnection {
-        pub async fn enumerate(
-            &mut self,
-        ) -> Result<Box<dyn Stream<Item = EnumerateResponse> + Unpin + Send>, TinkerforgeError>
-        {
+        pub async fn enumerate(&mut self) -> Result<Box<dyn Stream<Item=EnumerateResponse> + Unpin + Send>, TinkerforgeError> {
             self.inner.borrow_mut().lock().await.enumerate().await
         }
         pub(crate) async fn set(
@@ -52,12 +47,7 @@ pub mod async_io {
             payload: &[u8],
             timeout: Option<Duration>,
         ) -> Result<Option<PacketData>, TinkerforgeError> {
-            self.inner
-                .borrow_mut()
-                .lock()
-                .await
-                .set(uid, function_id, payload, timeout)
-                .await
+            self.inner.borrow_mut().lock().await.set(uid, function_id, payload, timeout).await
         }
         pub(crate) async fn get(
             &mut self,
@@ -66,32 +56,16 @@ pub mod async_io {
             payload: &[u8],
             timeout: Duration,
         ) -> Result<PacketData, TinkerforgeError> {
-            self.inner
-                .borrow_mut()
-                .lock()
-                .await
-                .get(uid, function_id, payload, timeout)
-                .await
+            self.inner.borrow_mut().lock().await.get(uid, function_id, payload, timeout).await
         }
-        pub(crate) async fn callback_stream(
-            &mut self,
-            uid: u32,
-            function_id: u8,
-        ) -> impl Stream<Item = PacketData> {
-            self.inner
-                .borrow_mut()
-                .lock()
-                .await
-                .callback_stream(uid, function_id)
-                .await
+        pub(crate) async fn callback_stream(&mut self, uid: u32, function_id: u8) -> impl Stream<Item=PacketData> {
+            self.inner.borrow_mut().lock().await.callback_stream(uid, function_id).await
         }
     }
 
     impl AsyncIpConnection {
         pub async fn new<T: ToSocketAddrs>(addr: T) -> Result<Self, TinkerforgeError> {
-            Ok(Self {
-                inner: Arc::new(Mutex::new(InnerAsyncIpConnection::new(addr).await?)),
-            })
+            Ok(Self { inner: Arc::new(Mutex::new(InnerAsyncIpConnection::new(addr).await?)) })
         }
     }
 
@@ -101,6 +75,7 @@ pub mod async_io {
         receiver: Receiver<Option<PacketData>>,
         //thread: JoinHandle<()>,
         seq_num: u8,
+        running: Arc<AtomicBool>,
     }
 
     impl InnerAsyncIpConnection {
@@ -108,7 +83,9 @@ pub mod async_io {
             let socket = TcpStream::connect(addr).await?;
             let (mut rd, write_stream) = io::split(socket);
             let (enum_tx, receiver) = broadcast::channel(512);
+            let running = Arc::new(AtomicBool::new(true));
             //let thread =
+            let running_clone = running.clone();
             tokio::spawn(async move {
                 loop {
                     let mut header_buffer = Box::new([0; PacketHeader::SIZE]);
@@ -126,49 +103,39 @@ pub mod async_io {
                             }
                             //println!("Header: {header:?}");
                             let packet_data = PacketData { header, body };
-                            enum_tx
-                                .send(Some(packet_data))
-                                .expect("Cannot process packet");
+                            enum_tx.send(Some(packet_data)).expect("Cannot process packet");
                         }
                         Ok(n) => {
                             error!("Unexpected read count: {}", n);
-                            enum_tx
-                                .send(None)
-                                .expect("Cannot close connection on read error");
+                            enum_tx.send(None).expect("Cannot close connection on read error");
+                            break;
                         }
                         Err(e) => {
                             error!("Error from socket: {}", e);
-                            enum_tx
-                                .send(None)
-                                .expect("Cannot close connection on communication error");
+                            enum_tx.send(None).expect("Cannot close connection on communication error");
+                            break;
                         }
                     };
                 }
+                running_clone.store(false, Ordering::Relaxed);
             });
             Ok(Self {
                 write_stream,
                 //thread,
                 seq_num: 1,
                 receiver,
+                running,
             })
         }
-        pub async fn enumerate(
-            &mut self,
-        ) -> Result<Box<dyn Stream<Item = EnumerateResponse> + Unpin + Send>, TinkerforgeError>
-        {
-            let request = Request::Set {
-                uid: 0,
-                function_id: 254,
-                payload: &[],
-            };
-            let stream = BroadcastStream::new(self.receiver.resubscribe())
-                .map_while(Self::while_some)
-                .filter_map(|p| match p {
-                    Ok(p) if p.header.function_id == 253 => {
-                        Some(EnumerateResponse::from_le_byte_slice(&p.body))
-                    }
-                    _ => None,
-                });
+        pub async fn enumerate(&mut self) -> Result<Box<dyn Stream<Item=EnumerateResponse> + Unpin + Send>, TinkerforgeError> {
+            if !self.running.as_ref().load(Ordering::Relaxed) {
+                return Ok(Box::new(empty()));
+            }
+            let request = Request::Set { uid: 0, function_id: 254, payload: &[] };
+            let stream = BroadcastStream::new(self.receiver.resubscribe()).map_while(Self::while_some).filter_map(|p| match p {
+                Ok(p) if p.header.function_id == 253 => Some(EnumerateResponse::from_le_byte_slice(&p.body)),
+                _ => None,
+            });
             let seq = self.next_seq();
             self.send_packet(&request, seq, true).await?;
             Ok(Box::new(stream))
@@ -180,11 +147,7 @@ pub mod async_io {
             payload: &[u8],
             timeout: Option<Duration>,
         ) -> Result<Option<PacketData>, TinkerforgeError> {
-            let request = Request::Set {
-                uid,
-                function_id,
-                payload,
-            };
+            let request = Request::Set { uid, function_id, payload };
             let seq = self.next_seq();
             if let Some(timeout) = timeout {
                 let stream = BroadcastStream::new(self.receiver.resubscribe())
@@ -194,9 +157,7 @@ pub mod async_io {
                 self.send_packet(&request, seq, true).await?;
                 tokio::pin!(stream);
                 if let Some(done) = stream.next().await {
-                    Ok(Some(
-                        done.map_err(|_| TinkerforgeError::NoResponseReceived)??,
-                    ))
+                    Ok(Some(done.map_err(|_| TinkerforgeError::NoResponseReceived)??))
                 } else {
                     Err(TinkerforgeError::NoResponseReceived)
                 }
@@ -206,33 +167,17 @@ pub mod async_io {
             }
         }
 
-        fn filter_response(
-            uid: u32,
-            function_id: u8,
-            seq: u8,
-        ) -> impl Fn(&Result<PacketData, BroadcastStreamRecvError>) -> bool {
+        fn filter_response(uid: u32, function_id: u8, seq: u8) -> impl Fn(&Result<PacketData, BroadcastStreamRecvError>) -> bool {
             move |result| {
                 if let Ok(PacketData { header, .. }) = result {
-                    header.uid == uid
-                        && header.function_id == function_id
-                        && header.sequence_number == seq
+                    header.uid == uid && header.function_id == function_id && header.sequence_number == seq
                 } else {
                     false
                 }
             }
         }
-        pub async fn get(
-            &mut self,
-            uid: u32,
-            function_id: u8,
-            payload: &[u8],
-            timeout: Duration,
-        ) -> Result<PacketData, TinkerforgeError> {
-            let request = Request::Get {
-                uid,
-                function_id,
-                payload,
-            };
+        pub async fn get(&mut self, uid: u32, function_id: u8, payload: &[u8], timeout: Duration) -> Result<PacketData, TinkerforgeError> {
+            let request = Request::Get { uid, function_id, payload };
             let seq = self.next_seq();
             let stream = BroadcastStream::new(self.receiver.resubscribe())
                 .map_while(Self::while_some)
@@ -240,27 +185,17 @@ pub mod async_io {
                 .timeout(timeout);
             tokio::pin!(stream);
             self.send_packet(&request, seq, true).await?;
-            Ok(stream
-                .next()
-                .await
-                .ok_or(TinkerforgeError::NoResponseReceived)?
-                .map_err(|_| TinkerforgeError::NoResponseReceived)??)
+            Ok(stream.next().await.ok_or(TinkerforgeError::NoResponseReceived)?.map_err(|_| TinkerforgeError::NoResponseReceived)??)
         }
 
-        fn while_some(
-            v: Result<Option<PacketData>, BroadcastStreamRecvError>,
-        ) -> Option<Result<PacketData, BroadcastStreamRecvError>> {
+        fn while_some(v: Result<Option<PacketData>, BroadcastStreamRecvError>) -> Option<Result<PacketData, BroadcastStreamRecvError>> {
             match v {
                 Ok(None) => None,
                 Ok(Some(p)) => Some(Ok(p)),
                 Err(e) => Some(Err(e)),
             }
         }
-        pub(crate) async fn callback_stream(
-            &mut self,
-            uid: u32,
-            function_id: u8,
-        ) -> impl Stream<Item = PacketData> {
+        pub(crate) async fn callback_stream(&mut self, uid: u32, function_id: u8) -> impl Stream<Item=PacketData> {
             BroadcastStream::new(self.receiver.resubscribe())
                 .map_while(move |result| match result {
                     Ok(Some(p)) => {
@@ -290,12 +225,7 @@ pub mod async_io {
                 })
                 .filter_map(|f| f)
         }
-        async fn send_packet(
-            &mut self,
-            request: &Request<'_>,
-            seq: u8,
-            response_expected: bool,
-        ) -> Result<(), TinkerforgeError> {
+        async fn send_packet(&mut self, request: &Request<'_>, seq: u8, response_expected: bool) -> Result<(), TinkerforgeError> {
             let header = request.get_header(response_expected, seq);
             assert!(header.length <= 72);
             let mut result = vec![0; header.length as usize];
@@ -337,44 +267,19 @@ pub mod async_io {
 
     #[derive(Debug, Clone)]
     pub(crate) enum Request<'a> {
-        Set {
-            uid: u32,
-            function_id: u8,
-            payload: &'a [u8],
-        },
-        Get {
-            uid: u32,
-            function_id: u8,
-            payload: &'a [u8],
-        },
+        Set { uid: u32, function_id: u8, payload: &'a [u8] },
+        Get { uid: u32, function_id: u8, payload: &'a [u8] },
     }
 
     impl Request<'_> {
         fn get_header(&self, response_expected: bool, sequence_number: u8) -> PacketHeader {
             match self {
-                Request::Set {
-                    uid,
-                    function_id,
-                    payload,
-                } => PacketHeader::with_payload(
-                    *uid,
-                    *function_id,
-                    sequence_number,
-                    response_expected,
-                    payload.len() as u8,
-                ),
-                Request::Get {
-                    uid,
-                    function_id,
-                    payload,
-                    ..
-                } => PacketHeader::with_payload(
-                    *uid,
-                    *function_id,
-                    sequence_number,
-                    true,
-                    payload.len() as u8,
-                ),
+                Request::Set { uid, function_id, payload } => {
+                    PacketHeader::with_payload(*uid, *function_id, sequence_number, response_expected, payload.len() as u8)
+                }
+                Request::Get { uid, function_id, payload, .. } => {
+                    PacketHeader::with_payload(*uid, *function_id, sequence_number, true, payload.len() as u8)
+                }
             }
         }
         fn get_payload(&self) -> &[u8] {
@@ -397,21 +302,8 @@ pub(crate) struct PacketHeader {
 }
 
 impl PacketHeader {
-    pub(crate) fn with_payload(
-        uid: u32,
-        function_id: u8,
-        sequence_number: u8,
-        response_expected: bool,
-        payload_len: u8,
-    ) -> PacketHeader {
-        PacketHeader {
-            uid,
-            length: PacketHeader::SIZE as u8 + payload_len,
-            function_id,
-            sequence_number,
-            response_expected,
-            error_code: 0,
-        }
+    pub(crate) fn with_payload(uid: u32, function_id: u8, sequence_number: u8, response_expected: bool, payload_len: u8) -> PacketHeader {
+        PacketHeader { uid, length: PacketHeader::SIZE as u8 + payload_len, function_id, sequence_number, response_expected, error_code: 0 }
     }
 
     pub(crate) const SIZE: usize = 8;
