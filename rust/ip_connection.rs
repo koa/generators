@@ -4,13 +4,14 @@ use std::str;
 use crate::byte_converter::{FromByteSlice, ToBytes};
 
 pub mod async_io {
+    use std::fmt::Debug;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::{
         borrow::BorrowMut,
         ops::{Deref, DerefMut},
         sync::Arc,
         time::Duration,
     };
-    use std::sync::atomic::{AtomicBool, Ordering};
 
     use log::{error, warn};
     use tokio::{
@@ -21,14 +22,18 @@ pub mod async_io {
             Mutex,
         },
     };
-    use tokio_stream::{empty, Stream, StreamExt, wrappers::{BroadcastStream, errors::BroadcastStreamRecvError}};
+    use tokio_stream::{
+        empty,
+        wrappers::{errors::BroadcastStreamRecvError, BroadcastStream},
+        Stream, StreamExt,
+    };
 
     use crate::{
         base58::Base58,
         byte_converter::{FromByteSlice, ToBytes},
         error::TinkerforgeError,
-        ip_connection::{EnumerateResponse, PacketHeader},
         ip_connection::EnumerationType,
+        ip_connection::{EnumerateResponse, PacketHeader},
     };
 
     #[derive(Debug, Clone)]
@@ -37,7 +42,7 @@ pub mod async_io {
     }
 
     impl AsyncIpConnection {
-        pub async fn enumerate(&mut self) -> Result<Box<dyn Stream<Item=EnumerateResponse> + Unpin + Send>, TinkerforgeError> {
+        pub async fn enumerate(&mut self) -> Result<Box<dyn Stream<Item = EnumerateResponse> + Unpin + Send>, TinkerforgeError> {
             self.inner.borrow_mut().lock().await.enumerate().await
         }
         pub(crate) async fn set(
@@ -58,13 +63,13 @@ pub mod async_io {
         ) -> Result<PacketData, TinkerforgeError> {
             self.inner.borrow_mut().lock().await.get(uid, function_id, payload, timeout).await
         }
-        pub(crate) async fn callback_stream(&mut self, uid: u32, function_id: u8) -> impl Stream<Item=PacketData> {
+        pub(crate) async fn callback_stream(&mut self, uid: u32, function_id: u8) -> impl Stream<Item = PacketData> {
             self.inner.borrow_mut().lock().await.callback_stream(uid, function_id).await
         }
     }
 
     impl AsyncIpConnection {
-        pub async fn new<T: ToSocketAddrs>(addr: T) -> Result<Self, TinkerforgeError> {
+        pub async fn new<T: ToSocketAddrs + Debug + Clone + Send + 'static>(addr: T) -> Result<Self, TinkerforgeError> {
             Ok(Self { inner: Arc::new(Mutex::new(InnerAsyncIpConnection::new(addr).await?)) })
         }
     }
@@ -79,8 +84,8 @@ pub mod async_io {
     }
 
     impl InnerAsyncIpConnection {
-        pub async fn new<T: ToSocketAddrs>(addr: T) -> Result<Self, TinkerforgeError> {
-            let socket = TcpStream::connect(addr).await?;
+        pub async fn new<T: ToSocketAddrs + Clone + Debug + Send + 'static>(addr: T) -> Result<Self, TinkerforgeError> {
+            let socket = TcpStream::connect(addr.clone()).await?;
             let (mut rd, write_stream) = io::split(socket);
             let (enum_tx, receiver) = broadcast::channel(512);
             let running = Arc::new(AtomicBool::new(true));
@@ -103,16 +108,22 @@ pub mod async_io {
                             }
                             //println!("Header: {header:?}");
                             let packet_data = PacketData { header, body };
-                            enum_tx.send(Some(packet_data)).expect("Cannot process packet");
+                            if let Err(error) = enum_tx.send(Some(packet_data)) {
+                                warn!("Cannot process packet from {addr:?}: {error}");
+                            }
                         }
                         Ok(n) => {
-                            error!("Unexpected read count: {}", n);
-                            enum_tx.send(None).expect("Cannot close connection on read error");
+                            error!("Unexpected read count from {addr:?}: {}", n);
+                            if let Err(error) = enum_tx.send(None) {
+                                warn!("Cannot close connection on read error: {error}");
+                            }
                             break;
                         }
                         Err(e) => {
-                            error!("Error from socket: {}", e);
-                            enum_tx.send(None).expect("Cannot close connection on communication error");
+                            error!("Error from socket {addr:?}: {e}");
+                            if let Err(error) = enum_tx.send(None) {
+                                warn!("Cannot close connection on communication error: {error}");
+                            }
                             break;
                         }
                     };
@@ -127,7 +138,7 @@ pub mod async_io {
                 running,
             })
         }
-        pub async fn enumerate(&mut self) -> Result<Box<dyn Stream<Item=EnumerateResponse> + Unpin + Send>, TinkerforgeError> {
+        pub async fn enumerate(&mut self) -> Result<Box<dyn Stream<Item = EnumerateResponse> + Unpin + Send>, TinkerforgeError> {
             if !self.running.as_ref().load(Ordering::Relaxed) {
                 return Ok(Box::new(empty()));
             }
@@ -195,7 +206,7 @@ pub mod async_io {
                 Err(e) => Some(Err(e)),
             }
         }
-        pub(crate) async fn callback_stream(&mut self, uid: u32, function_id: u8) -> impl Stream<Item=PacketData> {
+        pub(crate) async fn callback_stream(&mut self, uid: u32, function_id: u8) -> impl Stream<Item = PacketData> {
             BroadcastStream::new(self.receiver.resubscribe())
                 .map_while(move |result| match result {
                     Ok(Some(p)) => {
@@ -257,6 +268,7 @@ pub mod async_io {
     }
 
     impl PacketData {
+        #[allow(dead_code)]
         pub fn header(&self) -> PacketHeader {
             self.header
         }
