@@ -21,6 +21,7 @@ pub mod async_io {
             broadcast::{self, Receiver},
             Mutex,
         },
+        task::AbortHandle,
     };
     use tokio_stream::{
         empty,
@@ -78,9 +79,9 @@ pub mod async_io {
     struct InnerAsyncIpConnection {
         write_stream: WriteHalf<TcpStream>,
         receiver: Receiver<Option<PacketData>>,
-        //thread: JoinHandle<()>,
         seq_num: u8,
         running: Arc<AtomicBool>,
+        abort_handle: AbortHandle,
     }
 
     impl InnerAsyncIpConnection {
@@ -89,9 +90,8 @@ pub mod async_io {
             let (mut rd, write_stream) = io::split(socket);
             let (enum_tx, receiver) = broadcast::channel(512);
             let running = Arc::new(AtomicBool::new(true));
-            //let thread =
             let running_clone = running.clone();
-            tokio::spawn(async move {
+            let abort_handle = tokio::spawn(async move {
                 loop {
                     let mut header_buffer = Box::new([0; PacketHeader::SIZE]);
                     match rd.read_exact(header_buffer.deref_mut()).await {
@@ -110,6 +110,7 @@ pub mod async_io {
                             let packet_data = PacketData { header, body };
                             if let Err(error) = enum_tx.send(Some(packet_data)) {
                                 warn!("Cannot process packet from {addr:?}: {error}");
+                                break;
                             }
                         }
                         Ok(n) => {
@@ -129,14 +130,9 @@ pub mod async_io {
                     };
                 }
                 running_clone.store(false, Ordering::Relaxed);
-            });
-            Ok(Self {
-                write_stream,
-                //thread,
-                seq_num: 1,
-                receiver,
-                running,
             })
+            .abort_handle();
+            Ok(Self { write_stream, abort_handle, seq_num: 1, receiver, running })
         }
         pub async fn enumerate(&mut self) -> Result<Box<dyn Stream<Item = EnumerateResponse> + Unpin + Send>, TinkerforgeError> {
             if !self.running.as_ref().load(Ordering::Relaxed) {
@@ -258,6 +254,12 @@ pub mod async_io {
                 self.seq_num = 1;
             }
             self.seq_num
+        }
+    }
+
+    impl Drop for InnerAsyncIpConnection {
+        fn drop(&mut self) {
+            self.abort_handle.abort();
         }
     }
 
