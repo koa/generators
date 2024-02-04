@@ -1,7 +1,7 @@
 [package]
 name = "tinkerforge-async"
-version = "0.0.3"
-authors = ["Erik Fleckstein <erik@tinkerforge.com>"]
+version = "0.0.5"
+authors = ["Erik Fleckstein <erik@tinkerforge.com>", "Andreas König <koa@panter.ch>"]
 edition = "2018"
 rust = "1.74.1"
 description = "Async Rust API bindings for https://www.tinkerforge.com Bricks and Bricklets, based on Version: {version}"

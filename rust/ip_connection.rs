@@ -46,6 +46,9 @@ pub mod async_io {
         pub async fn enumerate(&mut self) -> Result<Box<dyn Stream<Item = EnumerateResponse> + Unpin + Send>, TinkerforgeError> {
             self.inner.borrow_mut().lock().await.enumerate().await
         }
+        pub async fn disconnect_probe(&mut self) -> Result<(), TinkerforgeError> {
+            self.inner.borrow_mut().lock().await.disconnect_probe().await
+        }
         pub(crate) async fn set(
             &mut self,
             uid: u32,
@@ -146,6 +149,13 @@ pub mod async_io {
             let seq = self.next_seq();
             self.send_packet(&request, seq, true).await?;
             Ok(Box::new(stream))
+        }
+        pub async fn disconnect_probe(&mut self)->Result<(), TinkerforgeError>{
+            let request = Request::Set { uid: 0, function_id: 128, payload: &[] };
+            let seq = self.next_seq();
+            self.send_packet(&request, seq, true).await?;
+            Ok(())
+
         }
         pub async fn set(
             &mut self,
