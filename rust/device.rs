@@ -18,7 +18,7 @@ lazy_static! {
     static ref REQUEST_TIMING: HistogramVec = register_histogram_vec!(
         "tinkerforge_request",
         "The Tinkerforge response times latencies in seconds.",
-        &["device_type", "function_id","method"]
+        &["device_type", "function_id", "method"]
     )
     .unwrap();
 }
@@ -49,6 +49,7 @@ pub(crate) struct Device {
     pub response_expected: [ResponseExpectedFlag; 256],
     pub internal_uid: u32,
     pub connection: AsyncIpConnection,
+    #[cfg(feature = "prometheus")]
     device_display_name: &'static str,
 }
 
@@ -85,12 +86,18 @@ impl std::fmt::Display for SetResponseExpectedError {
 }
 
 impl Device {
-    pub(crate) fn new(api_version: [u8; 3], internal_uid: u32, connection: AsyncIpConnection, device_display_name: &'static str) -> Device {
+    pub(crate) fn new(
+        api_version: [u8; 3],
+        internal_uid: u32,
+        connection: AsyncIpConnection,
+        #[allow(unused)] device_display_name: &'static str,
+    ) -> Device {
         Device {
             api_version,
             internal_uid,
             response_expected: [ResponseExpectedFlag::InvalidFunctionId; 256],
             connection,
+            #[cfg(feature = "prometheus")]
             device_display_name,
         }
     }
@@ -125,7 +132,7 @@ impl Device {
 
     pub(crate) async fn set(&mut self, function_id: u8, payload: &[u8]) -> Result<Option<PacketData>, TinkerforgeError> {
         #[cfg(feature = "prometheus")]
-        let timer = REQUEST_TIMING.with_label_values(&[self.device_display_name, function_id.to_string().as_str(),"set"]).start_timer();
+        let timer = REQUEST_TIMING.with_label_values(&[self.device_display_name, function_id.to_string().as_str(), "set"]).start_timer();
         let timeout =
             if self.response_expected[function_id as usize] == ResponseExpectedFlag::False { None } else { Some(DEFAULT_TIMEOUT) };
         let result = self.connection.set(self.internal_uid, function_id, payload, timeout).await;
@@ -140,7 +147,7 @@ impl Device {
 
     pub(crate) async fn get(&mut self, function_id: u8, payload: &[u8]) -> Result<PacketData, TinkerforgeError> {
         #[cfg(feature = "prometheus")]
-        let timer = REQUEST_TIMING.with_label_values(&[self.device_display_name, function_id.to_string().as_str(),"get"]).start_timer();
+        let timer = REQUEST_TIMING.with_label_values(&[self.device_display_name, function_id.to_string().as_str(), "get"]).start_timer();
         let result = self.connection.get(self.internal_uid, function_id, payload, DEFAULT_TIMEOUT).await;
         #[cfg(feature = "prometheus")]
         drop(timer);
