@@ -6,9 +6,10 @@ use futures_core::Stream;
 #[cfg(feature = "prometheus")]
 use lazy_static::lazy_static;
 #[cfg(feature = "prometheus")]
-use prometheus::{register_histogram_vec, HistogramVec};
+use prometheus::{HistogramVec, register_histogram_vec};
 
 use crate::{
+    base58::Uid,
     error::TinkerforgeError,
     ip_connection::async_io::{AsyncIpConnection, PacketData},
 };
@@ -47,7 +48,7 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) struct Device {
     pub api_version: [u8; 3],
     pub response_expected: [ResponseExpectedFlag; 256],
-    pub internal_uid: u32,
+    pub internal_uid: Uid,
     pub connection: AsyncIpConnection,
     #[cfg(feature = "prometheus")]
     device_display_name: &'static str,
@@ -88,7 +89,7 @@ impl std::fmt::Display for SetResponseExpectedError {
 impl Device {
     pub(crate) fn new(
         api_version: [u8; 3],
-        internal_uid: u32,
+        internal_uid: Uid,
         connection: AsyncIpConnection,
         #[allow(unused)] device_display_name: &'static str,
     ) -> Device {
@@ -132,7 +133,7 @@ impl Device {
 
     pub(crate) async fn set(&mut self, function_id: u8, payload: &[u8]) -> Result<Option<PacketData>, TinkerforgeError> {
         #[cfg(feature = "prometheus")]
-        let timer = REQUEST_TIMING.with_label_values(&[self.device_display_name, function_id.to_string().as_str(), "set"]).start_timer();
+            let timer = REQUEST_TIMING.with_label_values(&[self.device_display_name, function_id.to_string().as_str(), "set"]).start_timer();
         let timeout =
             if self.response_expected[function_id as usize] == ResponseExpectedFlag::False { None } else { Some(DEFAULT_TIMEOUT) };
         let result = self.connection.set(self.internal_uid, function_id, payload, timeout).await;
@@ -141,13 +142,13 @@ impl Device {
         result
     }
 
-    pub(crate) async fn get_callback_receiver(&mut self, function_id: u8) -> impl Stream<Item = PacketData> {
+    pub(crate) async fn get_callback_receiver(&mut self, function_id: u8) -> impl Stream<Item=PacketData> {
         self.connection.callback_stream(self.internal_uid, function_id).await
     }
 
     pub(crate) async fn get(&mut self, function_id: u8, payload: &[u8]) -> Result<PacketData, TinkerforgeError> {
         #[cfg(feature = "prometheus")]
-        let timer = REQUEST_TIMING.with_label_values(&[self.device_display_name, function_id.to_string().as_str(), "get"]).start_timer();
+            let timer = REQUEST_TIMING.with_label_values(&[self.device_display_name, function_id.to_string().as_str(), "get"]).start_timer();
         let result = self.connection.get(self.internal_uid, function_id, payload, DEFAULT_TIMEOUT).await;
         #[cfg(feature = "prometheus")]
         drop(timer);

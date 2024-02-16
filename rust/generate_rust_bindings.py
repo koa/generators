@@ -110,6 +110,7 @@ use crate::{{
 	device::*,
 	ip_connection::async_io::AsyncIpConnection,
 	low_level_traits::LowLevelRead,
+	base58::Uid,
 }};""".format(header=self.get_generator().get_header_comment(kind='asterisk'),
               description=description,
               callback_recv="",
@@ -368,7 +369,7 @@ pub struct {name} {{
 	pub const DEVICE_IDENTIFIER: u16 = {device_identifier};
 	pub const DEVICE_DISPLAY_NAME: &'static str = "{device_display_name}";
 	/// Creates an object with the unique device ID `uid`. This object can then be used after the IP Connection `ip_connection` is connected.
-	pub fn new(uid: u32, connection: AsyncIpConnection) -> {name} {{
+	pub fn new(uid: Uid, connection: AsyncIpConnection) -> {name} {{
 		let mut result = {name} {{
             device: Device::new([2, 0, 10], uid, connection, Self::DEVICE_DISPLAY_NAME),
         }};

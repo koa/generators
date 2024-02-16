@@ -1,19 +1,21 @@
 //! The IP Connection manages the communication between the API bindings and the Brick Daemon or a WIFI/Ethernet Extension.
 use std::str;
+use crate::base58::Uid;
 
 use crate::byte_converter::{FromByteSlice, ToBytes};
 
 pub mod async_io {
-    use std::fmt::Debug;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::{
         borrow::BorrowMut,
+        fmt::Debug,
         ops::{Deref, DerefMut},
         sync::Arc,
+        sync::atomic::{AtomicBool, Ordering},
         time::Duration,
     };
 
     use log::{error, warn};
+    use log::info;
     use tokio::{
         io::{self, AsyncReadExt, AsyncWriteExt, WriteHalf},
         net::{TcpStream, ToSocketAddrs},
@@ -25,17 +27,17 @@ pub mod async_io {
     };
     use tokio_stream::{
         empty,
-        wrappers::{errors::BroadcastStreamRecvError, BroadcastStream},
-        Stream, StreamExt,
+        Stream,
+        StreamExt, wrappers::{BroadcastStream, errors::BroadcastStreamRecvError},
     };
 
     use crate::{
-        base58::Base58,
         byte_converter::{FromByteSlice, ToBytes},
         error::TinkerforgeError,
-        ip_connection::EnumerationType,
         ip_connection::{EnumerateResponse, PacketHeader},
+        ip_connection::EnumerationType,
     };
+    use crate::base58::Uid;
 
     #[derive(Debug, Clone)]
     pub struct AsyncIpConnection {
@@ -43,15 +45,18 @@ pub mod async_io {
     }
 
     impl AsyncIpConnection {
-        pub async fn enumerate(&mut self) -> Result<Box<dyn Stream<Item = EnumerateResponse> + Unpin + Send>, TinkerforgeError> {
+        pub async fn enumerate(&mut self) -> Result<Box<dyn Stream<Item=EnumerateResponse> + Unpin + Send>, TinkerforgeError> {
             self.inner.borrow_mut().lock().await.enumerate().await
         }
         pub async fn disconnect_probe(&mut self) -> Result<(), TinkerforgeError> {
             self.inner.borrow_mut().lock().await.disconnect_probe().await
         }
+        pub async fn get_authentication_nonce(&mut self) -> Result<[u8; 4], TinkerforgeError> {
+            self.inner.borrow_mut().lock().await.get_authentication_nonce().await
+        }
         pub(crate) async fn set(
             &mut self,
-            uid: u32,
+            uid: Uid,
             function_id: u8,
             payload: &[u8],
             timeout: Option<Duration>,
@@ -60,14 +65,14 @@ pub mod async_io {
         }
         pub(crate) async fn get(
             &mut self,
-            uid: u32,
+            uid: Uid,
             function_id: u8,
             payload: &[u8],
             timeout: Duration,
         ) -> Result<PacketData, TinkerforgeError> {
             self.inner.borrow_mut().lock().await.get(uid, function_id, payload, timeout).await
         }
-        pub(crate) async fn callback_stream(&mut self, uid: u32, function_id: u8) -> impl Stream<Item = PacketData> {
+        pub(crate) async fn callback_stream(&mut self, uid: Uid, function_id: u8) -> impl Stream<Item=PacketData> {
             self.inner.borrow_mut().lock().await.callback_stream(uid, function_id).await
         }
     }
@@ -90,6 +95,8 @@ pub mod async_io {
     impl InnerAsyncIpConnection {
         pub async fn new<T: ToSocketAddrs + Clone + Debug + Send + 'static>(addr: T) -> Result<Self, TinkerforgeError> {
             let socket = TcpStream::connect(addr.clone()).await?;
+            Self::enable_keepalive(&socket)?;
+
             let (mut rd, write_stream) = io::split(socket);
             let (enum_tx, receiver) = broadcast::channel(512);
             let running = Arc::new(AtomicBool::new(true));
@@ -109,8 +116,8 @@ pub mod async_io {
                                 }
                                 Err(e) => panic!("Error from socket: {}", e),
                             }
-                            //println!("Header: {header:?}");
                             let packet_data = PacketData { header, body };
+                            info!("Received: {packet_data:?}");
                             if let Err(error) = enum_tx.send(Some(packet_data)) {
                                 warn!("Cannot process packet from {addr:?}: {error}");
                                 break;
@@ -133,15 +140,24 @@ pub mod async_io {
                     };
                 }
                 running_clone.store(false, Ordering::Relaxed);
+                info!("Terminated receiver thread");
             })
-            .abort_handle();
+                .abort_handle();
             Ok(Self { write_stream, abort_handle, seq_num: 1, receiver, running })
         }
-        pub async fn enumerate(&mut self) -> Result<Box<dyn Stream<Item = EnumerateResponse> + Unpin + Send>, TinkerforgeError> {
+
+        fn enable_keepalive(socket: &TcpStream) -> Result<(), TinkerforgeError> {
+            let mut ka = socket2::TcpKeepalive::new();
+            ka = ka.with_time(Duration::from_secs(20));
+            ka = ka.with_interval(Duration::from_secs(20));
+            socket2::SockRef::from(&socket).set_tcp_keepalive(&ka)?;
+            Ok(())
+        }
+        pub async fn enumerate(&mut self) -> Result<Box<dyn Stream<Item=EnumerateResponse> + Unpin + Send>, TinkerforgeError> {
             if !self.running.as_ref().load(Ordering::Relaxed) {
                 return Ok(Box::new(empty()));
             }
-            let request = Request::Set { uid: 0, function_id: 254, payload: &[] };
+            let request = Request::Set { uid: Uid::zero(), function_id: 254, payload: &[] };
             let stream = BroadcastStream::new(self.receiver.resubscribe()).map_while(Self::while_some).filter_map(|p| match p {
                 Ok(p) if p.header.function_id == 253 => Some(EnumerateResponse::from_le_byte_slice(&p.body)),
                 _ => None,
@@ -150,16 +166,38 @@ pub mod async_io {
             self.send_packet(&request, seq, true).await?;
             Ok(Box::new(stream))
         }
-        pub async fn disconnect_probe(&mut self)->Result<(), TinkerforgeError>{
-            let request = Request::Set { uid: 0, function_id: 128, payload: &[] };
+        pub async fn disconnect_probe(&mut self) -> Result<(), TinkerforgeError> {
+            let request = Request::Set { uid: Uid::zero(), function_id: 128, payload: &[] };
             let seq = self.next_seq();
             self.send_packet(&request, seq, true).await?;
             Ok(())
-
+        }
+        async fn get_authentication_nonce(&mut self) -> Result<[u8; 4], TinkerforgeError> {
+            let request = Request::Set { uid: Uid::zero(), function_id: 1, payload: &[] };
+            let seq = self.next_seq();
+            let stream = BroadcastStream::new(self.receiver.resubscribe())
+                .map_while(Self::while_some)
+                .timeout(Duration::from_secs(5));
+            self.send_packet(&request, seq, true).await?;
+            tokio::pin!(stream);
+            let option = stream.next().await;
+            info!("Paket: {option:?}");
+            if let Some(Ok(Ok(next_paket))) = option {
+                let body = next_paket.body;
+                if body.len() == 4 {
+                    let mut ret = [0; 4];
+                    ret.copy_from_slice(&body);
+                    Ok(ret)
+                } else {
+                    todo!()
+                }
+            } else {
+                todo!()
+            }
         }
         pub async fn set(
             &mut self,
-            uid: u32,
+            uid: Uid,
             function_id: u8,
             payload: &[u8],
             timeout: Option<Duration>,
@@ -184,7 +222,7 @@ pub mod async_io {
             }
         }
 
-        fn filter_response(uid: u32, function_id: u8, seq: u8) -> impl Fn(&Result<PacketData, BroadcastStreamRecvError>) -> bool {
+        fn filter_response(uid: Uid, function_id: u8, seq: u8) -> impl Fn(&Result<PacketData, BroadcastStreamRecvError>) -> bool {
             move |result| {
                 if let Ok(PacketData { header, .. }) = result {
                     header.uid == uid && header.function_id == function_id && header.sequence_number == seq
@@ -193,7 +231,7 @@ pub mod async_io {
                 }
             }
         }
-        pub async fn get(&mut self, uid: u32, function_id: u8, payload: &[u8], timeout: Duration) -> Result<PacketData, TinkerforgeError> {
+        pub async fn get(&mut self, uid: Uid, function_id: u8, payload: &[u8], timeout: Duration) -> Result<PacketData, TinkerforgeError> {
             let request = Request::Get { uid, function_id, payload };
             let seq = self.next_seq();
             let stream = BroadcastStream::new(self.receiver.resubscribe())
@@ -212,7 +250,7 @@ pub mod async_io {
                 Err(e) => Some(Err(e)),
             }
         }
-        pub(crate) async fn callback_stream(&mut self, uid: u32, function_id: u8) -> impl Stream<Item = PacketData> {
+        pub(crate) async fn callback_stream(&mut self, uid: Uid, function_id: u8) -> impl Stream<Item=PacketData> {
             BroadcastStream::new(self.receiver.resubscribe())
                 .map_while(move |result| match result {
                     Ok(Some(p)) => {
@@ -223,7 +261,7 @@ pub mod async_io {
                         } else if header.function_id == 253 {
                             let enum_paket = EnumerateResponse::from_le_byte_slice(p.body());
                             if enum_paket.enumeration_type == EnumerationType::Disconnected
-                                && Some(uid) == enum_paket.uid.base58_to_u32().ok()
+                                && Some(uid) ==   enum_paket.uid.parse().ok()
                             {
                                 // device is disconnected -> end stream
                                 None
@@ -243,10 +281,11 @@ pub mod async_io {
                 .filter_map(|f| f)
         }
         async fn send_packet(&mut self, request: &Request<'_>, seq: u8, response_expected: bool) -> Result<(), TinkerforgeError> {
+            info!("Send: {request:?}");
             let header = request.get_header(response_expected, seq);
             assert!(header.length <= 72);
             let mut result = vec![0; header.length as usize];
-            result[0..4].copy_from_slice(&u32::to_le_byte_vec(header.uid));
+            header.uid.write_to_slice(&mut result[0..4]);
             result[4] = header.length;
             result[5] = header.function_id;
             result[6] = header.sequence_number << 4 | (header.response_expected as u8) << 3;
@@ -291,8 +330,8 @@ pub mod async_io {
 
     #[derive(Debug, Clone)]
     pub(crate) enum Request<'a> {
-        Set { uid: u32, function_id: u8, payload: &'a [u8] },
-        Get { uid: u32, function_id: u8, payload: &'a [u8] },
+        Set { uid: Uid, function_id: u8, payload: &'a [u8] },
+        Get { uid: Uid, function_id: u8, payload: &'a [u8] },
     }
 
     impl Request<'_> {
@@ -317,7 +356,7 @@ pub mod async_io {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub(crate) struct PacketHeader {
-    uid: u32,
+    uid: Uid,
     length: u8,
     function_id: u8,
     sequence_number: u8,
@@ -326,7 +365,7 @@ pub(crate) struct PacketHeader {
 }
 
 impl PacketHeader {
-    pub(crate) fn with_payload(uid: u32, function_id: u8, sequence_number: u8, response_expected: bool, payload_len: u8) -> PacketHeader {
+    pub(crate) fn with_payload(uid: Uid, function_id: u8, sequence_number: u8, response_expected: bool, payload_len: u8) -> PacketHeader {
         PacketHeader { uid, length: PacketHeader::SIZE as u8 + payload_len, function_id, sequence_number, response_expected, error_code: 0 }
     }
 
@@ -336,7 +375,7 @@ impl PacketHeader {
 impl FromByteSlice for PacketHeader {
     fn from_le_byte_slice(bytes: &[u8]) -> PacketHeader {
         PacketHeader {
-            uid: u32::from_le_byte_slice(bytes),
+            uid: Uid::from_le_byte_slice(bytes),
             length: bytes[4],
             function_id: bytes[5],
             sequence_number: (bytes[6] & 0xf0) >> 4,
@@ -353,7 +392,7 @@ impl FromByteSlice for PacketHeader {
 impl ToBytes for PacketHeader {
     fn to_le_byte_vec(header: PacketHeader) -> Vec<u8> {
         let mut target = vec![0u8; 8];
-        target[0..4].copy_from_slice(&u32::to_le_byte_vec(header.uid));
+        header.uid.write_to_slice(&mut target[0..4]);
         target[4] = header.length;
         target[5] = header.function_id;
         target[6] = header.sequence_number << 4 | (header.response_expected as u8) << 3;
@@ -362,7 +401,7 @@ impl ToBytes for PacketHeader {
     }
 
     fn write_to_slice(self, target: &mut [u8]) {
-        target[0..4].copy_from_slice(&u32::to_le_byte_vec(self.uid));
+        self.uid.write_to_slice(&mut target[0..4]);
         target[4] = self.length;
         target[5] = self.function_id;
         target[6] = self.sequence_number << 4 | (self.response_expected as u8) << 3;
@@ -451,108 +490,6 @@ impl FromByteSlice for EnumerateResponse {
 
     fn bytes_expected() -> usize {
         26
-    }
-}
-
-/// This enum specifies the reason of a successful connection.
-/// It is generated from the [Connect event receiver](`crate::ip_connection::IpConnection::get_connect_callback_receiver)
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ConnectReason {
-    /// Connection established after request from user.
-    Request,
-    /// Connection after auto-reconnect.
-    AutoReconnect,
-}
-
-/// This enum specifies the reason of a connections termination.
-/// It is generated from the [Disconnect event receiver](`crate::ip_connection::IpConnection::get_disconnect_callback_receiver)
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum DisconnectReason {
-    /// Disconnect was requested by user.
-    Request,
-    /// Disconnect because of an unresolvable error.
-    Error,
-    /// Disconnect initiated by Brick Daemon or WIFI/Ethernet Extension.
-    Shutdown,
-}
-
-/// This error is raised if a [`connect`](crate::ip_connection::IpConnection::connect) call fails.
-#[derive(Debug)]
-pub enum ConnectError {
-    /// Could not parse the given ip address.
-    CouldNotParseIpAddress(String),
-    /// Could not resolve the given ip addresses.
-    CouldNotResolveIpAddress,
-    /// An [`IoError`](std::io::Error) was raised while creating the socket.
-    IoError(std::io::Error),
-    /// Already connected. Disconnect before connecting somewhere else.
-    AlreadyConnected,
-    /// Could not create tcp socket (Failed to set no delay flag).
-    CouldNotSetNoDelayFlag,
-    /// Could not create tcp socket (Failed to clone tcp stream).
-    CouldNotCloneTcpStream,
-    /// Connect succeeded, but the socket was disconnected immediately.
-    /// This usually happens if the first auto-reconnect succeeds immediately, but should be handled within the reconnect logic.
-    NotReallyConnected,
-}
-
-impl std::error::Error for ConnectError {
-    /*fn description(&self) -> &str {  }*/
-}
-
-impl std::fmt::Display for ConnectError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        if let ConnectError::IoError(e) = self {
-            e.fmt(f)
-        } else {
-            write!(
-                f,
-                "{}",
-                match self {
-                    ConnectError::CouldNotParseIpAddress(addr) => format!("Could not parse ip address: {}", addr),
-                    ConnectError::CouldNotResolveIpAddress => "Could not resolve any of the given ip addresses".to_owned(),
-                    ConnectError::IoError(_e) => unreachable!("Could not query io error description. This is a bug in the rust bindings."),
-                    ConnectError::AlreadyConnected => "Already connected. Disconnect before connecting somewhere else.".to_owned(),
-                    ConnectError::CouldNotSetNoDelayFlag =>
-                        "Could not create tcp socket (Failed to set no delay flag). This is a bug in the rust bindings.".to_owned(),
-                    ConnectError::CouldNotCloneTcpStream =>
-                        "Could not create tcp socket (Failed to clone tcp stream). This is a bug in the rust bindings.".to_owned(),
-                    ConnectError::NotReallyConnected =>
-                        "Connect succeeded, but the socket was disconnected immediately. This is a bug in the rust bindings.".to_owned(),
-                }
-            )
-        }
-    }
-}
-
-impl From<std::io::Error> for ConnectError {
-    fn from(err: std::io::Error) -> Self {
-        ConnectError::IoError(err)
-    }
-}
-
-/// This error is raised if a disconnect request failed, because there was no connection to disconnect
-#[derive(Debug)]
-pub struct DisconnectErrorNotConnected;
-
-/// This enum is returned from the [`get_connection_state`](crate::ip_connection::IpConnection::get_connection_state) method.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ConnectionState {
-    /// No connection is established.
-    Disconnected,
-    /// A connection to the Brick Daemon or the WIFI/Ethernet Extension is established.
-    Connected,
-    /// IP Connection is currently trying to connect.
-    Pending,
-}
-
-impl From<usize> for ConnectionState {
-    fn from(num: usize) -> ConnectionState {
-        match num {
-            1 => ConnectionState::Connected,
-            2 => ConnectionState::Pending,
-            _ => ConnectionState::Disconnected,
-        }
     }
 }
 

@@ -2,15 +2,126 @@
 use std::{
     error::Error,
     fmt::{Display, Formatter},
+    str::FromStr,
 };
 
+use byteorder::{ByteOrder, LittleEndian};
 use const_str::to_char_array;
+
+use crate::byte_converter::{FromByteSlice, ToBytes};
 
 const ALPHABET: [char; 58] = to_char_array!("123456789abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ");
 
 const ERROR_INVALID_CHAR: &str = "UID contains an invalid character";
 const ERROR_TOO_BIG: &str = "UID is too big to fit into a u64";
 const ERROR_EMPTY: &str = "UID is empty or a value that mapped to zero";
+
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default, Ord, PartialOrd)]
+pub struct Uid(u32);
+
+impl Uid {
+    #[inline]
+    pub(crate) fn zero() -> Uid {
+        Uid(0)
+    }
+}
+
+impl From<u32> for Uid {
+    fn from(value: u32) -> Self {
+        Uid(value)
+    }
+}
+
+impl From<Uid> for u32 {
+    fn from(value: Uid) -> Self {
+        value.0
+    }
+}
+
+impl FromStr for Uid {
+    type Err = Base58Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(s.base58_to_u32()?))
+    }
+}
+
+impl Display for Uid {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&u32_to_base58(self.0))
+    }
+}
+
+impl ToBytes for Uid {
+    fn to_le_byte_vec(num: Uid) -> Vec<u8> {
+        let mut buf = vec![0; 4];
+        LittleEndian::write_u32(&mut buf, num.0);
+        buf
+    }
+
+    fn write_to_slice(self, target: &mut [u8]) {
+        LittleEndian::write_u32(target, self.0);
+    }
+}
+
+impl FromByteSlice for Uid {
+    fn from_le_byte_slice(bytes: &[u8]) -> Uid {
+        Uid(LittleEndian::read_u32(bytes))
+    }
+
+    fn bytes_expected() -> usize {
+        4
+    }
+}
+
+#[cfg(feature = "serde")]
+mod serde {
+    use std::{
+        fmt::Formatter,
+        str::FromStr,
+    };
+
+    use serde::{
+        de::{Error, Visitor},
+        Deserialize, Deserializer, Serialize, Serializer,
+    };
+
+    use crate::base58::Uid;
+
+    struct UidVisitor;
+
+    impl<'de> Visitor<'de> for UidVisitor {
+        type Value = Uid;
+
+        fn expecting(&self, formatter: &mut Formatter) -> std::fmt::Result {
+            formatter.write_str("a string a tinkerforge uid in base58 format")
+        }
+        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: Error,
+        {
+            Uid::from_str(v).map_err(|error| E::custom(format!("Cannot parse {v} as uid: {error}")))
+        }
+    }
+
+    impl<'de> Deserialize<'de> for Uid {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+        {
+            deserializer.deserialize_str(UidVisitor)
+        }
+    }
+
+    impl Serialize for Uid {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+        {
+            serializer.serialize_str(&self.to_string())
+        }
+    }
+}
 
 ///Error type of Base58 parser.
 #[derive(Debug, Copy, Clone)]
@@ -54,10 +165,14 @@ impl Base58 for str {
             match ALPHABET.iter().enumerate().find(|(_, c)| **c == character).map(|(i, _)| i) {
                 None => return Err(Base58Error::InvalidCharacter),
                 Some(i) => {
-                    result_u64 = result_u64.checked_mul(ALPHABET.len() as u64).ok_or(Base58Error::UidTooBig)?.checked_add(i as u64).ok_or(Base58Error::UidTooBig)?;
+                    result_u64 = result_u64
+                        .checked_mul(ALPHABET.len() as u64)
+                        .ok_or(Base58Error::UidTooBig)?
+                        .checked_add(i as u64)
+                        .ok_or(Base58Error::UidTooBig)?;
                 }
             }
-        };
+        }
 
         let result = if result_u64 > u32::max_value().into() {
             let value1 = result_u64 & 0xFF_FF_FF_FF;
