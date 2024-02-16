@@ -4,6 +4,7 @@ use std::{
     fmt::{Display, Formatter},
     str::FromStr,
 };
+use std::fmt::Debug;
 
 use byteorder::{ByteOrder, LittleEndian};
 use const_str::to_char_array;
@@ -16,8 +17,9 @@ const ERROR_INVALID_CHAR: &str = "UID contains an invalid character";
 const ERROR_TOO_BIG: &str = "UID is too big to fit into a u64";
 const ERROR_EMPTY: &str = "UID is empty or a value that mapped to zero";
 
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default, Ord, PartialOrd)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Default, Ord, PartialOrd)]
 pub struct Uid(u32);
+
 
 impl Uid {
     #[inline]
@@ -52,6 +54,13 @@ impl Display for Uid {
     }
 }
 
+impl Debug for Uid {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&u32_to_base58(self.0))
+    }
+}
+
+
 impl ToBytes for Uid {
     fn to_le_byte_vec(num: Uid) -> Vec<u8> {
         let mut buf = vec![0; 4];
@@ -76,10 +85,7 @@ impl FromByteSlice for Uid {
 
 #[cfg(feature = "serde")]
 mod serde {
-    use std::{
-        fmt::Formatter,
-        str::FromStr,
-    };
+    use std::{fmt::Formatter, str::FromStr};
 
     use serde::{
         de::{Error, Visitor},

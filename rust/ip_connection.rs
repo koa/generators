@@ -1,6 +1,6 @@
 //! The IP Connection manages the communication between the API bindings and the Brick Daemon or a WIFI/Ethernet Extension.
-use std::str;
 use crate::base58::Uid;
+use std::str;
 
 use crate::byte_converter::{FromByteSlice, ToBytes};
 
@@ -9,13 +9,19 @@ pub mod async_io {
         borrow::BorrowMut,
         fmt::Debug,
         ops::{Deref, DerefMut},
-        sync::Arc,
-        sync::atomic::{AtomicBool, Ordering},
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc
+        },
         time::Duration,
     };
 
-    use log::{error, warn};
-    use log::info;
+    use log::{
+        debug,
+        info,
+        error,
+        warn
+    };
     use tokio::{
         io::{self, AsyncReadExt, AsyncWriteExt, WriteHalf},
         net::{TcpStream, ToSocketAddrs},
@@ -27,17 +33,17 @@ pub mod async_io {
     };
     use tokio_stream::{
         empty,
-        Stream,
-        StreamExt, wrappers::{BroadcastStream, errors::BroadcastStreamRecvError},
+        wrappers::{errors::BroadcastStreamRecvError, BroadcastStream},
+        Stream, StreamExt,
     };
 
     use crate::{
+        base58::Uid,
         byte_converter::{FromByteSlice, ToBytes},
         error::TinkerforgeError,
-        ip_connection::{EnumerateResponse, PacketHeader},
         ip_connection::EnumerationType,
+        ip_connection::{EnumerateResponse, PacketHeader}
     };
-    use crate::base58::Uid;
 
     #[derive(Debug, Clone)]
     pub struct AsyncIpConnection {
@@ -45,7 +51,7 @@ pub mod async_io {
     }
 
     impl AsyncIpConnection {
-        pub async fn enumerate(&mut self) -> Result<Box<dyn Stream<Item=EnumerateResponse> + Unpin + Send>, TinkerforgeError> {
+        pub async fn enumerate(&mut self) -> Result<Box<dyn Stream<Item = EnumerateResponse> + Unpin + Send>, TinkerforgeError> {
             self.inner.borrow_mut().lock().await.enumerate().await
         }
         pub async fn disconnect_probe(&mut self) -> Result<(), TinkerforgeError> {
@@ -72,7 +78,7 @@ pub mod async_io {
         ) -> Result<PacketData, TinkerforgeError> {
             self.inner.borrow_mut().lock().await.get(uid, function_id, payload, timeout).await
         }
-        pub(crate) async fn callback_stream(&mut self, uid: Uid, function_id: u8) -> impl Stream<Item=PacketData> {
+        pub(crate) async fn callback_stream(&mut self, uid: Uid, function_id: u8) -> impl Stream<Item = PacketData> {
             self.inner.borrow_mut().lock().await.callback_stream(uid, function_id).await
         }
     }
@@ -117,7 +123,7 @@ pub mod async_io {
                                 Err(e) => panic!("Error from socket: {}", e),
                             }
                             let packet_data = PacketData { header, body };
-                            info!("Received: {packet_data:?}");
+                            debug!("Received: {packet_data:?}");
                             if let Err(error) = enum_tx.send(Some(packet_data)) {
                                 warn!("Cannot process packet from {addr:?}: {error}");
                                 break;
@@ -142,7 +148,7 @@ pub mod async_io {
                 running_clone.store(false, Ordering::Relaxed);
                 info!("Terminated receiver thread");
             })
-                .abort_handle();
+            .abort_handle();
             Ok(Self { write_stream, abort_handle, seq_num: 1, receiver, running })
         }
 
@@ -153,7 +159,7 @@ pub mod async_io {
             socket2::SockRef::from(&socket).set_tcp_keepalive(&ka)?;
             Ok(())
         }
-        pub async fn enumerate(&mut self) -> Result<Box<dyn Stream<Item=EnumerateResponse> + Unpin + Send>, TinkerforgeError> {
+        pub async fn enumerate(&mut self) -> Result<Box<dyn Stream<Item = EnumerateResponse> + Unpin + Send>, TinkerforgeError> {
             if !self.running.as_ref().load(Ordering::Relaxed) {
                 return Ok(Box::new(empty()));
             }
@@ -175,9 +181,7 @@ pub mod async_io {
         async fn get_authentication_nonce(&mut self) -> Result<[u8; 4], TinkerforgeError> {
             let request = Request::Set { uid: Uid::zero(), function_id: 1, payload: &[] };
             let seq = self.next_seq();
-            let stream = BroadcastStream::new(self.receiver.resubscribe())
-                .map_while(Self::while_some)
-                .timeout(Duration::from_secs(5));
+            let stream = BroadcastStream::new(self.receiver.resubscribe()).map_while(Self::while_some).timeout(Duration::from_secs(5));
             self.send_packet(&request, seq, true).await?;
             tokio::pin!(stream);
             let option = stream.next().await;
@@ -250,7 +254,7 @@ pub mod async_io {
                 Err(e) => Some(Err(e)),
             }
         }
-        pub(crate) async fn callback_stream(&mut self, uid: Uid, function_id: u8) -> impl Stream<Item=PacketData> {
+        pub(crate) async fn callback_stream(&mut self, uid: Uid, function_id: u8) -> impl Stream<Item = PacketData> {
             BroadcastStream::new(self.receiver.resubscribe())
                 .map_while(move |result| match result {
                     Ok(Some(p)) => {
@@ -260,9 +264,7 @@ pub mod async_io {
                             Some(Some(p))
                         } else if header.function_id == 253 {
                             let enum_paket = EnumerateResponse::from_le_byte_slice(p.body());
-                            if enum_paket.enumeration_type == EnumerationType::Disconnected
-                                && Some(uid) ==   enum_paket.uid.parse().ok()
-                            {
+                            if enum_paket.enumeration_type == EnumerationType::Disconnected && Some(uid) == enum_paket.uid.parse().ok() {
                                 // device is disconnected -> end stream
                                 None
                             } else {
@@ -281,7 +283,6 @@ pub mod async_io {
                 .filter_map(|f| f)
         }
         async fn send_packet(&mut self, request: &Request<'_>, seq: u8, response_expected: bool) -> Result<(), TinkerforgeError> {
-            info!("Send: {request:?}");
             let header = request.get_header(response_expected, seq);
             assert!(header.length <= 72);
             let mut result = vec![0; header.length as usize];
@@ -295,6 +296,7 @@ pub mod async_io {
                 result[8..].copy_from_slice(payload);
             }
             self.write_stream.write_all(&result[..]).await?;
+            debug!("Sent: {request:?}");
             Ok(())
         }
         fn next_seq(&mut self) -> u8 {
