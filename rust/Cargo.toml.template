@@ -1,6 +1,6 @@
 [package]
 name = "tinkerforge-async"
-version = "0.0.5"
+version = "0.0.6"
 authors = ["Erik Fleckstein <erik@tinkerforge.com>", "Andreas König <koa@panter.ch>"]
 edition = "2018"
 rust = "1.74.1"
