@@ -1,0 +1,99 @@
+2018-11-08: 2.0.0 (78e2e85)
+- Initial version
+
+2018-11-08: 2.0.1 (54b1772)
+- Added readme.md and licenses
+
+2018-11-08: 2.0.2 (2ee80c5)
+- Fixed readme link in Cargo.toml
+
+2018-11-08: 2.0.3 (bb98b1e)
+- Fixed GitHub links in readme.md
+
+2018-11-21: 2.0.4 (1e56121)
+- Fixed :func: links
+- Relaxed IpConnection::connect type parameter requirements
+- Fixed some documentation
+- Added link to Tinkerforge docs and logo
+
+2018-11-21: 2.0.5 (b98a86f)
+- Module description and link to Tinkerforge docs had no separating newline
+
+2018-12-21: 2.0.6 (e18c208)
+- Removed duplicated assignment in Device::set_response_expected_all
+- Fixed infinite loop when stream reading out of sync
+- Implemented get_api_version
+- Fixed name collision with stabilized (from/to)_le_byte methods
+- Fixed race condition in IpConnection setters
+
+2018-12-21: 2.0.7 (506e8dc)
+- Documented changed compiler requirements
+
+2019-01-29: 2.0.8 (2617875)
+- Add support for Accelerometer 2.0 and Ambient Light 3.0 Bricklet
+
+2019-05-21: 2.0.9 (a3d0573)
+- Add support for CO2 2.0, E-Paper 296x128, Hall Effect 2.0, Joystick 2.0,
+  Laser Range Finder 2.0, Linear Poti 2.0, Piezo Speaker 2.0, RGB LED 2.0 and
+  Segment Display 4x7 2.0 Bricklet and HAT and HAT Zero Brick
+- Add remove_calibration and get/set_background_calibration_duration functions
+  to Air Quality Bricklet API
+- Properly check UIDs and report invalid UIDs
+
+2019-06-11: 2.0.10 (6ec2351)
+- Fix streaming of fixed length parameters
+
+2019-06-19: 2.0.11 (6ec2351)
+- Allow device construction with an IpConnectionRequestSender
+
+2019-08-23: 2.0.12 (59d9363)
+- Add support for Color 2.0, Compass, Distance US 2.0, Energy Monitor,
+  Multi Touch 2.0, Rotary Poti 2.0 and XMC1400 Breakout Bricklet
+- Add get/set_filter_configuration functions to Accelerometer Bricklet 2.0 API
+- Add CONVERSION_TIME constants to Voltage/Current Bricklet 2.0 API
+
+2019-11-25: 2.0.13 (b1270ba)
+- Add set/get_voltages_callback_configuration functions and voltages callback
+  to HAT Brick API
+- Add set/get_usb_voltage_callback_configuration functions and usb_voltage
+  callback to HAT Zero Brick API
+- Add set/get_statistics_callback_configuration functions and statistics
+  callback to Isolator Bricklet API
+- Report error if authentication secret contains non-ASCII chars
+
+2020-04-07: 2.0.14 (3dff30a)
+- Add set/get_flux_linear_parameters functions to Thermal Imaging Bricklet API
+- Add set/get_frame_readable_callback_configuration functions and frame_readable
+  callback to CAN (2.0), RS232 (2.0) and RS485 Bricklet API
+- Add set/get_error_occurred_callback_configuration functions and error_occurred
+  callback to CAN Bricklet 2.0 API
+- Add read_frame function to RS232 Bricklet API
+- Add write/read_bricklet_plugin functions to all Brick APIs for internal EEPROM
+  Bricklet flashing
+- Add set_bricklet_xmc_flash_config/data and set/get_bricklets_enabled functions
+  to Master Brick 3.0 API for internal Co-MCU Bricklet bootloader flashing
+
+2020-05-19: 2.0.15 (9c76b18)
+- Add get_all_voltages and set/get_all_voltages_callback_configuration functions
+  and all_voltages callback to Industrial Dual Analog In Bricklet 2.0 API
+- Add set/get_i2c_mode functions to Barometer Bricklet API
+
+2020-11-02: 2.0.16 (6399602)
+- Add support for IMU Bricklet 3.0 and Industrial Dual AC Relay Bricklet
+
+2021-01-15: 2.0.17 (797d61e)
+- Add support for Performance DC Bricklet and Servo Bricklet 2.0
+
+2021-05-06: 2.0.18 (7cd6fa2)
+- Add gpio_state callback to Performance DC Bricklet API
+- Add support for DC 2.0, Industrial PTC and Silent Stepper Bricklet 2.0
+
+2021-08-26: 2.0.19 (f83a1b6)
+- Fix compilation issues caused by yanked dependency
+- Add set/get_display_driver functions and DISPLAY_DRIVER constants to
+  E-Paper 296x128 Bricklet API
+- Add simple_get_tag_id function and MODE_SIMPLE constant to NFC Bricklet API
+
+2022-05-11: 2.0.20 (982fff1)
+- Add support for GPS Bricklet 3.0 and ESP32 (Ethernet) Brick
+- Add set/get_rtc_driver functions and RTC_DRIVER constants to HAT Brick API
