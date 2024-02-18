@@ -14,8 +14,8 @@ use syn::{
     parse_quote,
     punctuated::Punctuated,
     token::{Comma, PathSep, Pub},
-    Arm, Block, Expr, ExprMatch, Field, FieldMutability, FieldValue, File, Ident, Item, ItemImpl, ItemMod, Lit, Path, PathArguments,
-    PathSegment, Stmt, Type, TypePath, Variant, Visibility,
+    Arm, Block, Expr, ExprMatch, Field, FieldMutability, FieldValue, File, Ident, ImplItem, ImplItemFn, Item, ItemImpl, ItemMod, Lit, Path,
+    PathArguments, PathSegment, Stmt, Type, TypePath, Variant, Visibility,
 };
 
 fn main() -> Result<(), PyErr> {
@@ -523,17 +523,21 @@ from generators import common",
                         function_statements.push(Stmt::Expr(parse_quote!(Ok(())), None));
                     }
                     let function_block = Block { brace_token: Default::default(), stmts: function_statements };
-                    if let Some(request_type) = request_type {
-                        device_impl.items.push(parse_quote!(
+                    let function_item: ImplItemFn = if let Some(request_type) = request_type {
+                        parse_quote!(
+                            #[doc = #doc_de]
                             pub async fn #function_name(&mut self, request: #request_type) -> Result<#response_type, TinkerforgeError>
                                 #function_block
-                        ));
+                        )
                     } else {
-                        device_impl.items.push(parse_quote!(
+                        parse_quote!(
+                            #[doc = #doc_de]
                             pub async fn #function_name(&mut self) -> Result<#response_type, TinkerforgeError>
                                 #function_block
-                        ));
-                    }
+                        )
+                    };
+
+                    device_impl.items.push(ImplItem::Fn(function_item));
                 } else if packet_type == TfPacketType::Callback {
                     if !out_fields.is_empty() {
                         let struct_name: Ident = create_ident(&format!("{packet_name}Callback"));
