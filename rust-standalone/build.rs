@@ -103,6 +103,7 @@ enum TfValueType {
     Bool,
     Char,
     String,
+    Float,
 }
 
 impl ToTokens for TfValueType {
@@ -136,6 +137,9 @@ impl ToTokens for TfValueType {
                 TfValueType::I32 => {
                     quote!(i32)
                 }
+                TfValueType::Float => {
+                    quote!(f32)
+                }
             }
             .into_token_stream(),
         )
@@ -162,6 +166,8 @@ impl TfValueType {
             Some(Self::Char)
         } else if value == "string" {
             Some(Self::String)
+        } else if value == "float" {
+            Some(Self::Float)
         } else {
             None
         }
@@ -172,7 +178,7 @@ impl TfValueType {
             TfValueType::U8 => string.parse::<u8>()?.into_token_stream(),
             TfValueType::U32 => string.parse::<u32>()?.into_token_stream(),
             TfValueType::U16 => string.parse::<u16>()?.into_token_stream(),
-            TfValueType::Bool => string.parse::<bool>()?.into_token_stream(),
+            TfValueType::Bool => string.to_lowercase().parse::<bool>()?.into_token_stream(),
             TfValueType::Char => string
                 .parse::<char>()
                 .map_err(|e| PyErr::new::<PyTypeError, _>(format!("Cannot parse {string} as char: {e}")))?
@@ -183,6 +189,7 @@ impl TfValueType {
             TfValueType::I8 => string.parse::<i8>()?.into_token_stream(),
             TfValueType::I16 => string.parse::<i16>()?.into_token_stream(),
             TfValueType::I32 => string.parse::<i32>()?.into_token_stream(),
+            TfValueType::Float => string.parse::<i32>()?.into_token_stream(),
         })
     }
     fn bytecount(&self, array_length: usize) -> usize {
@@ -196,6 +203,7 @@ impl TfValueType {
             TfValueType::Bool => (array_length + 7) / 8,
             TfValueType::Char => array_length,
             TfValueType::String => array_length,
+            TfValueType::Float => array_length * 4,
         }
     }
 }
@@ -277,6 +285,11 @@ from generators import common",
             last_device_id = Some(tf_device.device_identifier);
             println!("Python file: {:?}: {name}", entry.path());
 
+            if name == "RS485" || name == "Unknown" {
+                // probleme mit doppelten einträgen in der config
+                continue;
+            }
+
             let package_name = name.to_case(Case::Snake);
             let device_struct_name = Ident::new(
                 &format!("{}{}", name.to_case(Case::UpperCamel), tf_device.category.to_case(Case::UpperCamel)),
@@ -291,254 +304,253 @@ from generators import common",
                 device_name_arms.push(parse_quote!(DeviceIdentifier::#device_struct_name =>#name));
             }
 
-            if name == "Master" {
-                let mut items = Vec::new();
-                items.push(parse_quote!(
-                    use std::time::Duration;
-                ));
-                items.push(parse_quote!(
-                    use crate::{
-                        base58::Uid,
-                        byte_converter::{FromByteSlice, ToBytes},
-                        device::Device,
-                        error::TinkerforgeError,
-                        ip_connection::async_io::AsyncIpConnection,
-                    };
-                ));
+            let mut items = Vec::new();
+            items.push(parse_quote!(
+                use crate::{
+                    base58::Uid,
+                    byte_converter::{FromByteSlice, ToBytes},
+                    device::Device,
+                    error::TinkerforgeError,
+                    ip_connection::async_io::AsyncIpConnection,
+                };
+            ));
 
-                println!("Name: {name}");
-                println!("Package: {package_name}");
-                //println!("Tf Device: {tf_device:#?}");
-                items.push(parse_quote!(
-                    #[derive(Clone, Debug)]
-                    pub struct #device_struct_name {
-                        device: Device,
-                    }
-                ));
-                let api_version = tf_device.api_version;
-                let av1 = api_version[0];
-                let av2 = api_version[1];
-                let av3 = api_version[2];
-                let mut device_impl: ItemImpl = parse_quote!(
-                    impl #device_struct_name {
-                        pub fn new(uid: Uid, connection: AsyncIpConnection) -> #device_struct_name {
-                            Self{
-                                device: Device::new([#av1,#av2,#av3],uid,connection,#name)
-                            }
-                        }
-                    }
-                );
-                for group in tf_device.constant_groups {
-                    let camel_name = group.name.to_case(Case::UpperCamel);
-                    let ty = if let Some(ty) = TfValueType::try_parse_type(group.r#type) {
-                        ty
-                    } else {
-                        continue;
-                    };
-                    let enum_name_ident = Ident::new(&camel_name, Span::call_site());
-                    let mut variants: Punctuated<Variant, Comma> = Default::default();
-                    let mut encode_arms = vec![];
-                    let mut parse_arms = vec![];
-                    for (name, value) in group.constants {
-                        let variant_ident = Ident::new(&name.to_case(Case::UpperCamel), Span::call_site());
-                        variants.push(parse_quote!(#variant_ident));
-                        let value = ty.parse_token_value(value)?;
-                        encode_arms.push(parse_quote!(#enum_name_ident::#variant_ident =>#value));
-                        parse_arms.push(parse_quote!(#value => Ok(#enum_name_ident::#variant_ident)))
-                    }
-                    items.push(parse_quote!(
-                        #[derive(Copy,Clone,Eq,PartialEq,Debug)]
-                        pub enum #enum_name_ident{
-                            #variants
-                        }
-                    ));
-
-                    let encode_match = ExprMatch {
-                        attrs: vec![],
-                        match_token: Default::default(),
-                        expr: Box::new(parse_quote!(self)),
-                        brace_token: Default::default(),
-                        arms: encode_arms,
-                    };
-
-                    parse_arms.push(parse_quote!(_ => Err(())));
-                    let parse_match = ExprMatch {
-                        attrs: vec![],
-                        match_token: Default::default(),
-                        expr: Box::new(parse_quote!(self)),
-                        brace_token: Default::default(),
-                        arms: parse_arms,
-                    };
-
-                    items.push(Item::Impl(parse_quote!(
-                        impl Into<#ty> for #enum_name_ident {
-                            fn into(self) -> #ty {
-                                #encode_match
-                            }
-                        }
-                    )));
-                    items.push(Item::Impl(parse_quote!(
-                        impl std::convert::TryInto<#enum_name_ident> for #ty {
-                            type Error = ();
-                            fn try_into(self) -> Result<#enum_name_ident, Self::Error> {
-                                #parse_match
-                            }
-                        }
-                    )));
+            println!("Name: {name}");
+            println!("Package: {package_name}");
+            //println!("Tf Device: {tf_device:#?}");
+            items.push(parse_quote!(
+                #[derive(Clone, Debug)]
+                pub struct #device_struct_name {
+                    device: Device,
                 }
-                for (packet_idx, packet_entry) in tf_device.packets.iter().enumerate() {
-                    let packet_name = packet_entry.name.to_case(Case::UpperCamel);
-                    let packet_type = if let Some(ty) = TfPacketType::try_parse_type(packet_entry.r#type) {
-                        ty
-                    } else {
-                        println!("Unknown Packet type: {}", packet_entry.r#type);
-                        continue;
-                    };
-                    let doc_list = packet_entry.doc.downcast::<PyList>()?;
-                    let doc = doc_list.get_item(1)?.downcast::<PyDict>()?;
-                    println!("Packet: {packet_name}");
-                    let doc_de = doc.get_item("de")?.map(|v| v.to_string()).unwrap_or_default();
-                    //println!("Doc: {}", doc_de);
-                    let mut in_fields = Vec::new();
-                    let mut out_fields = Vec::new();
-                    for element_entry in &packet_entry.elements {
-                        let element_tuple = element_entry.downcast::<PyTuple>()?;
+            ));
+            let api_version = tf_device.api_version;
+            let av1 = api_version[0];
+            let av2 = api_version[1];
+            let av3 = api_version[2];
+            let mut device_impl: ItemImpl = parse_quote!(
+                impl #device_struct_name {
+                    pub fn new(uid: Uid, connection: AsyncIpConnection) -> #device_struct_name {
+                        Self{
+                            device: Device::new([#av1,#av2,#av3],uid,connection,#name)
+                        }
+                    }
+                }
+            );
+            for group in tf_device.constant_groups {
+                let camel_name = group.name.to_case(Case::UpperCamel);
+                println!("Constant group: {}", group.name);
+                let ty = if let Some(ty) = TfValueType::try_parse_type(group.r#type) {
+                    ty
+                } else {
+                    continue;
+                };
+                let enum_name_ident = create_ident(&camel_name);
+                let mut variants: Punctuated<Variant, Comma> = Default::default();
+                let mut encode_arms = vec![];
+                let mut parse_arms = vec![];
+                for (name, value) in group.constants {
+                    let variant_ident = create_ident(&name.to_case(Case::UpperCamel));
+                    variants.push(parse_quote!(#variant_ident));
+                    let value = ty.parse_token_value(value)?;
+                    encode_arms.push(parse_quote!(#enum_name_ident::#variant_ident =>#value));
+                    parse_arms.push(parse_quote!(#value => Ok(#enum_name_ident::#variant_ident)))
+                }
+                items.push(parse_quote!(
+                    #[derive(Copy,Clone,Eq,PartialEq,Debug)]
+                    pub enum #enum_name_ident{
+                        #variants
+                    }
+                ));
 
-                        let element_name = element_tuple.get_item(0)?.to_string();
-                        let element_name_rust = element_name.to_case(Case::Camel);
-                        let transfer_type_str = element_tuple.get_item(1)?.downcast::<PyString>()?.to_str()?;
-                        let transfer_type = TfValueType::try_parse_type(transfer_type_str);
-                        let repeat_count = usize::extract(element_tuple.get_item(2)?)?;
-                        let direction_str = element_tuple.get_item(3)?.downcast::<PyString>()?.to_str()?;
-                        let (constant_group, unit) = if element_tuple.len() > 4 {
-                            let details = element_tuple.get_item(4)?;
-                            if let Ok(params) = details.downcast::<PyDict>() {
-                                let unit = string_from_dict(params, "unit")?;
-                                let constant_group = string_from_dict(params, "constant_group")?;
-                                (constant_group, unit)
-                            } else if let Ok(param_list) = details.downcast::<PyList>() {
-                                (None, None)
-                            } else {
-                                (None, None)
-                            }
+                let encode_match = ExprMatch {
+                    attrs: vec![],
+                    match_token: Default::default(),
+                    expr: Box::new(parse_quote!(self)),
+                    brace_token: Default::default(),
+                    arms: encode_arms,
+                };
+
+                parse_arms.push(parse_quote!(_ => Err(())));
+                let parse_match = ExprMatch {
+                    attrs: vec![],
+                    match_token: Default::default(),
+                    expr: Box::new(parse_quote!(self)),
+                    brace_token: Default::default(),
+                    arms: parse_arms,
+                };
+
+                items.push(Item::Impl(parse_quote!(
+                    impl Into<#ty> for #enum_name_ident {
+                        fn into(self) -> #ty {
+                            #encode_match
+                        }
+                    }
+                )));
+                items.push(Item::Impl(parse_quote!(
+                    impl std::convert::TryInto<#enum_name_ident> for #ty {
+                        type Error = ();
+                        fn try_into(self) -> Result<#enum_name_ident, Self::Error> {
+                            #parse_match
+                        }
+                    }
+                )));
+            }
+            for (packet_idx, packet_entry) in tf_device.packets.iter().enumerate() {
+                let packet_name = packet_entry.name.to_case(Case::UpperCamel);
+                let packet_type = if let Some(ty) = TfPacketType::try_parse_type(packet_entry.r#type) {
+                    ty
+                } else {
+                    println!("Unknown Packet type: {}", packet_entry.r#type);
+                    continue;
+                };
+                let doc_list = packet_entry.doc.downcast::<PyList>()?;
+                let doc = doc_list.get_item(1)?.downcast::<PyDict>()?;
+                println!("Packet: {packet_name}");
+                let doc_de = doc.get_item("de")?.map(|v| v.to_string()).unwrap_or_default();
+                //println!("Hit: {packet_entry:#?}");
+                //println!("Doc: {}", doc_de);
+                let mut in_fields = Vec::new();
+                let mut out_fields = Vec::new();
+                for element_entry in &packet_entry.elements {
+                    let element_tuple = element_entry.downcast::<PyTuple>()?;
+
+                    let element_name = element_tuple.get_item(0)?.to_string();
+                    let element_name_rust = element_name.to_case(Case::Camel);
+                    let transfer_type_str =
+                        element_tuple.get_item(1)?.downcast::<PyString>().expect("Type of element is not a string").to_str()?;
+                    let transfer_type = TfValueType::try_parse_type(transfer_type_str);
+                    let repeat_count = usize::extract(element_tuple.get_item(2)?)?;
+                    let direction_str =
+                        element_tuple.get_item(3)?.downcast::<PyString>().expect("direction of element is not a string").to_str()?;
+                    let (constant_group, unit) = if element_tuple.len() > 4 {
+                        let details = element_tuple.get_item(4)?;
+                        if let Ok(params) = details.downcast::<PyDict>() {
+                            let unit = string_from_dict(params, "unit").expect("Cannot parse unit of element");
+                            let constant_group = string_from_dict(params, "constant_group")?;
+                            (constant_group, unit)
+                        } else if let Ok(param_list) = details.downcast::<PyList>() {
+                            (None, None)
                         } else {
                             (None, None)
-                        };
-                        let fields = if direction_str == "in" {
-                            &mut in_fields
-                        } else if direction_str == "out" {
-                            &mut out_fields
-                        } else {
-                            println!("Unknown direction: {direction_str}");
-                            continue;
-                        };
-                        let ident = Some(Ident::new(&element_name_rust.to_case(Case::Snake), Span::call_site()));
-                        let (ty, field_size): (Type, _) = if let Some(ty) = transfer_type {
-                            (
-                                if repeat_count > 1 && ty == TfValueType::String {
-                                    parse_quote!([char;#repeat_count])
+                        }
+                    } else {
+                        (None, None)
+                    };
+                    let fields = if direction_str == "in" {
+                        &mut in_fields
+                    } else if direction_str == "out" {
+                        &mut out_fields
+                    } else {
+                        println!("Unknown direction: {direction_str}");
+                        continue;
+                    };
+                    let ident = Some(create_ident(&element_name_rust.to_case(Case::Snake)));
+                    let (ty, field_size): (Type, _) = if let Some(ty) = transfer_type {
+                        (
+                            if repeat_count > 1 && ty == TfValueType::String {
+                                parse_quote!([char;#repeat_count])
+                            } else {
+                                let base_type = if let Some(constant_group) = constant_group {
+                                    let constant_type_name = Some(create_ident(&constant_group.to_case(Case::UpperCamel)));
+                                    parse_quote!(crate::byte_converter::ParsedOrRaw<#constant_type_name,#ty>)
                                 } else {
-                                    let base_type = if let Some(constant_group) = constant_group {
-                                        let constant_type_name =
-                                            Some(Ident::new(&constant_group.to_case(Case::UpperCamel), Span::call_site()));
-                                        parse_quote!(crate::byte_converter::ParsedOrRaw<#constant_type_name,#ty>)
-                                    } else {
-                                        ty.to_token_stream()
-                                    };
-                                    if repeat_count > 1 {
-                                        parse_quote!([#base_type;#repeat_count])
-                                    } else {
-                                        parse_quote!(#base_type)
-                                    }
-                                },
-                                ty.bytecount(repeat_count),
-                            )
-                        } else {
-                            println!(" ########### Unknown type: {}", transfer_type_str);
-                            continue;
-                        };
-
-                        //let ty = if repeat_count > 1 { parse_quote!([#base_type;#repeat_count]) } else { parse_quote!(#base_type) };
-                        fields.push((
-                            Field {
-                                attrs: vec![],
-                                vis: Visibility::Public(Pub::default()),
-                                mutability: FieldMutability::None,
-                                ident,
-                                colon_token: None,
-                                ty,
+                                    ty.to_token_stream()
+                                };
+                                if repeat_count > 1 {
+                                    parse_quote!([#base_type;#repeat_count])
+                                } else {
+                                    parse_quote!(#base_type)
+                                }
                             },
-                            field_size,
+                            ty.bytecount(repeat_count),
+                        )
+                    } else {
+                        println!(" ########### Unknown type: {}", transfer_type_str);
+                        continue;
+                    };
+
+                    //let ty = if repeat_count > 1 { parse_quote!([#base_type;#repeat_count]) } else { parse_quote!(#base_type) };
+                    fields.push((
+                        Field {
+                            attrs: vec![],
+                            vis: Visibility::Public(Pub::default()),
+                            mutability: FieldMutability::None,
+                            ident,
+                            colon_token: None,
+                            ty,
+                        },
+                        field_size,
+                    ));
+                }
+                //println!("Elements done");
+                if packet_type == TfPacketType::Function {
+                    let (request_type, request_size): (Option<Type>, usize) = if in_fields.is_empty() {
+                        (None, 0)
+                    } else {
+                        let name = format!("{packet_name}Request");
+                        let struct_name: Ident = create_ident(&name);
+                        let size = append_data_object(&mut items, &in_fields, &struct_name);
+                        (Some(parse_quote!(#struct_name)), size)
+                    };
+                    let (response_type, response_line): (Type, Option<Stmt>) = if out_fields.is_empty() {
+                        (parse_quote!(()), None)
+                    } else {
+                        let name = format!("{packet_name}Response");
+                        let struct_name: Ident = create_ident(&name);
+                        append_data_object(&mut items, &out_fields, &struct_name);
+                        (
+                            parse_quote!(#struct_name),
+                            Some(Stmt::Expr(parse_quote!(Ok(#struct_name::from_le_byte_slice(result.body()))), None)),
+                        )
+                    };
+                    let function_name = create_ident(&packet_entry.name.to_case(Case::Snake));
+                    let function_id = packet_idx as u8 + 1;
+                    let mut function_statements = Vec::new();
+                    if request_type.is_some() {
+                        function_statements.push(parse_quote!(let mut payload = [0; #request_size];));
+                        function_statements.push(parse_quote!(request.write_to_slice(&mut payload);))
+                    } else {
+                        function_statements.push(parse_quote!(let payload = [0; #request_size];));
+                    }
+
+                    if let Some(response_line) = response_line {
+                        function_statements.push(parse_quote!(let result = self.device.get(#function_id, &payload).await?;));
+                        function_statements.push(response_line);
+                    } else {
+                        function_statements
+                            .push(parse_quote!(self.device.set(#function_id, &payload,Some(std::time::Duration::from_secs(2))).await?;));
+                        function_statements.push(Stmt::Expr(parse_quote!(Ok(())), None));
+                    }
+                    let function_block = Block { brace_token: Default::default(), stmts: function_statements };
+                    if let Some(request_type) = request_type {
+                        device_impl.items.push(parse_quote!(
+                            pub async fn #function_name(&mut self, request: #request_type) -> Result<#response_type, TinkerforgeError>
+                                #function_block
+                        ));
+                    } else {
+                        device_impl.items.push(parse_quote!(
+                            pub async fn #function_name(&mut self) -> Result<#response_type, TinkerforgeError>
+                                #function_block
                         ));
                     }
-                    if packet_type == TfPacketType::Function {
-                        let (request_type, request_size): (Option<Type>, usize) = if in_fields.is_empty() {
-                            (None, 0)
-                        } else {
-                            let name = format!("{packet_name}Request");
-                            let struct_name: Ident = Ident::new(&name, Span::call_site());
-                            let size = append_data_object(&mut items, &mut in_fields, &struct_name);
-                            (Some(parse_quote!(#struct_name)), size)
-                        };
-                        let (response_type, response_line): (Type, Option<Stmt>) = if out_fields.is_empty() {
-                            (parse_quote!(()), None)
-                        } else {
-                            let name = format!("{packet_name}Response");
-                            let struct_name: Ident = Ident::new(&name, Span::call_site());
-                            append_data_object(&mut items, &mut out_fields, &struct_name);
-                            (
-                                parse_quote!(#struct_name),
-                                Some(Stmt::Expr(parse_quote!(Ok(#struct_name::from_le_byte_slice(result.body()))), None)),
-                            )
-                        };
-                        let function_name = Ident::new(&packet_entry.name.to_case(Case::Snake), Span::call_site());
-                        let function_id = packet_idx as u8 + 1;
-                        let mut function_statements = Vec::new();
-                        if request_type.is_some() {
-                            function_statements.push(parse_quote!(let mut payload = [0; #request_size];));
-                            function_statements.push(parse_quote!(request.write_to_slice(&mut payload);))
-                        } else {
-                            function_statements.push(parse_quote!(let payload = [0; #request_size];));
-                        }
-
-                        if let Some(response_line) = response_line {
-                            function_statements.push(parse_quote!(let result = self.device.get(#function_id, &payload).await?;));
-                            function_statements.push(response_line);
-                        } else {
-                            function_statements
-                                .push(parse_quote!(self.device.set(#function_id, &payload,Some(Duration::from_secs(2))).await?;));
-                            function_statements.push(Stmt::Expr(parse_quote!(Ok(())), None));
-                        }
-                        let function_block = Block { brace_token: Default::default(), stmts: function_statements };
-                        if let Some(request_type) = request_type {
-                            device_impl.items.push(parse_quote!(
-                                pub async fn #function_name(&mut self, request: #request_type) -> Result<#response_type, TinkerforgeError>
-                                    #function_block
-                            ));
-                        } else {
-                            device_impl.items.push(parse_quote!(
-                                pub async fn #function_name(&mut self) -> Result<#response_type, TinkerforgeError>
-                                    #function_block
-                            ));
-                        }
-                    } else if packet_type == TfPacketType::Callback {
-                        if !out_fields.is_empty() {
-                            let struct_name: Ident = Ident::new(&format!("{packet_name}Callback"), Span::call_site());
-                            append_data_object(&mut items, &mut out_fields, &struct_name);
-                        }
+                } else if packet_type == TfPacketType::Callback {
+                    if !out_fields.is_empty() {
+                        let struct_name: Ident = create_ident(&format!("{packet_name}Callback"));
+                        append_data_object(&mut items, &mut out_fields, &struct_name);
                     }
                 }
-                items.push(Item::Impl(device_impl));
-                bindings_content.push(Item::Mod(ItemMod {
-                    attrs: vec![],
-                    vis: Visibility::Public(Default::default()),
-                    unsafety: None,
-                    mod_token: Default::default(),
-                    ident: Ident::new(&package_name, Span::call_site()),
-                    content: Some((Default::default(), items)),
-                    semi: None,
-                }));
             }
+            items.push(Item::Impl(device_impl));
+            bindings_content.push(Item::Mod(ItemMod {
+                attrs: vec![],
+                vis: Visibility::Public(Default::default()),
+                unsafety: None,
+                mod_token: Default::default(),
+                ident: create_ident(&package_name),
+                content: Some((Default::default(), items)),
+                semi: None,
+            }));
         }
     }
 
@@ -581,6 +593,20 @@ from generators import common",
     fs::write(dest_path, unparse(&file))?;
 
     Ok(())
+}
+
+fn create_ident(string: &str) -> Ident {
+    if if string == "type" {
+        true
+    } else if let Some(first_char) = string.chars().next() {
+        !first_char.is_alphabetic()
+    } else {
+        false
+    } {
+        Ident::new(&format!("_{string}"), Span::call_site())
+    } else {
+        Ident::new(string, Span::call_site())
+    }
 }
 
 fn match_self(arms: Vec<Arm>) -> ExprMatch {
@@ -664,7 +690,12 @@ fn static_method_call(ty: &Type, method: Ident, args: Punctuated<Expr, Comma>) -
 
 fn string_from_dict<'a>(dict: &'a PyDict, key: &str) -> PyResult<Option<&'a str>> {
     if let Some(entry) = dict.get_item(key)? {
-        Ok(Some(entry.downcast::<PyString>()?.to_str()?))
+        if let Ok(string_value) = entry.downcast::<PyString>() {
+            Ok(Some(string_value.to_str()?))
+        } else {
+            println!("Invalid String value: {entry:?}");
+            Ok(None)
+        }
     } else {
         Ok(None)
     }

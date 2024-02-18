@@ -298,6 +298,20 @@ where
     Raw(R),
 }
 
+impl<P, R> From<R> for ParsedOrRaw<P, R>
+where
+    P: Into<R> + Debug + Clone + Copy,
+    R: TryInto<P> + FromByteSlice + ToBytes + Debug + Clone + Copy,
+{
+    fn from(value: R) -> Self {
+        if let Ok(parsed) = value.try_into() {
+            ParsedOrRaw::Parsed(parsed)
+        } else {
+            ParsedOrRaw::Raw(value)
+        }
+    }
+}
+
 impl<P, R> ToBytes for ParsedOrRaw<P, R>
 where
     P: Into<R> + Debug + Clone + Copy,
@@ -328,5 +342,15 @@ where
 
     fn bytes_expected() -> usize {
         R::bytes_expected()
+    }
+}
+
+impl<P, R> Default for ParsedOrRaw<P, R>
+where
+    P: Into<R> + Debug + Clone + Copy,
+    R: TryInto<P> + FromByteSlice + ToBytes + Debug + Clone + Copy + Default,
+{
+    fn default() -> Self {
+        Self::from(R::default())
     }
 }

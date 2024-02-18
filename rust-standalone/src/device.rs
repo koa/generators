@@ -47,7 +47,6 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Clone, Debug)]
 pub(crate) struct Device {
     pub api_version: [u8; 3],
-    pub response_expected: [ResponseExpectedFlag; 256],
     pub internal_uid: Uid,
     pub connection: AsyncIpConnection,
     #[cfg(feature = "prometheus")]
@@ -96,38 +95,9 @@ impl Device {
         Device {
             api_version,
             internal_uid,
-            response_expected: [ResponseExpectedFlag::InvalidFunctionId; 256],
             connection,
             #[cfg(feature = "prometheus")]
             device_display_name,
-        }
-    }
-
-    pub(crate) fn get_response_expected(&self, function_id: u8) -> Result<bool, GetResponseExpectedError> {
-        match self.response_expected[function_id as usize] {
-            ResponseExpectedFlag::False => Ok(false),
-            ResponseExpectedFlag::True => Ok(true),
-            ResponseExpectedFlag::AlwaysTrue => Ok(true),
-            ResponseExpectedFlag::InvalidFunctionId => Err(GetResponseExpectedError(function_id)),
-        }
-    }
-
-    pub(crate) fn set_response_expected(&mut self, function_id: u8, response_expected: bool) -> Result<(), SetResponseExpectedError> {
-        if self.response_expected[function_id as usize] == ResponseExpectedFlag::AlwaysTrue {
-            Err(SetResponseExpectedError::IsAlwaysTrue(function_id))
-        } else if self.response_expected[function_id as usize] == ResponseExpectedFlag::InvalidFunctionId {
-            Err(SetResponseExpectedError::InvalidFunctionId(function_id))
-        } else {
-            self.response_expected[function_id as usize] = ResponseExpectedFlag::from(response_expected);
-            Ok(())
-        }
-    }
-
-    pub(crate) fn set_response_expected_all(&mut self, response_expected: bool) {
-        for resp_exp in self.response_expected.iter_mut() {
-            if *resp_exp == ResponseExpectedFlag::True || *resp_exp == ResponseExpectedFlag::False {
-                *resp_exp = ResponseExpectedFlag::from(response_expected);
-            }
         }
     }
 
