@@ -8,6 +8,7 @@ use lazy_static::lazy_static;
 #[cfg(feature = "prometheus")]
 use prometheus::{register_histogram_vec, HistogramVec};
 
+use crate::ip_connection::Version;
 use crate::{
     base58::Uid,
     error::TinkerforgeError,
@@ -24,29 +25,10 @@ lazy_static! {
     .unwrap();
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
-pub(crate) enum ResponseExpectedFlag {
-    InvalidFunctionId,
-    False,
-    True,
-    AlwaysTrue,
-}
-
-impl From<bool> for ResponseExpectedFlag {
-    fn from(b: bool) -> Self {
-        if b {
-            ResponseExpectedFlag::True
-        } else {
-            ResponseExpectedFlag::False
-        }
-    }
-}
-
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug)]
 pub(crate) struct Device {
-    pub api_version: [u8; 3],
     pub internal_uid: Uid,
     pub connection: AsyncIpConnection,
     #[cfg(feature = "prometheus")]
@@ -86,14 +68,8 @@ impl std::fmt::Display for SetResponseExpectedError {
 }
 
 impl Device {
-    pub(crate) fn new(
-        api_version: [u8; 3],
-        internal_uid: Uid,
-        connection: AsyncIpConnection,
-        #[allow(unused)] device_display_name: &'static str,
-    ) -> Device {
+    pub(crate) fn new(internal_uid: Uid, connection: AsyncIpConnection, #[allow(unused)] device_display_name: &'static str) -> Device {
         Device {
-            api_version,
             internal_uid,
             connection,
             #[cfg(feature = "prometheus")]

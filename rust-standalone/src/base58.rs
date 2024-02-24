@@ -43,7 +43,11 @@ impl FromStr for Uid {
     type Err = Base58Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self(s.base58_to_u32()?))
+        if s == "0" {
+            Ok(Uid(0))
+        } else {
+            Ok(Self(s.base58_to_u32()?))
+        }
     }
 }
 
@@ -55,7 +59,11 @@ impl Display for Uid {
 
 impl Debug for Uid {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&u32_to_base58(self.0))
+        if self.0 == 0 {
+            f.write_str("0")
+        } else {
+            f.write_str(&u32_to_base58(self.0))
+        }
     }
 }
 

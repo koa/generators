@@ -1,6 +1,6 @@
 //! Traits for (de)serialization of structs to byte vectors.
 use std::convert::TryInto;
-use std::fmt::Debug;
+use std::fmt::{Debug, Formatter};
 
 use byteorder::{ByteOrder, LittleEndian};
 
@@ -288,7 +288,7 @@ impl FromByteSlice for f64 {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(PartialEq, Clone, Copy)]
 pub enum ParsedOrRaw<P, R>
 where
     P: Into<R> + Debug + Clone + Copy,
@@ -296,6 +296,42 @@ where
 {
     Parsed(P),
     Raw(R),
+}
+
+impl<P, R> ParsedOrRaw<P, R>
+where
+    P: Into<R> + Debug + Clone + Copy,
+    R: TryInto<P> + FromByteSlice + ToBytes + Debug + Clone + Copy,
+{
+    pub fn parsed(&self) -> Option<P> {
+        match self {
+            ParsedOrRaw::Parsed(v) => Some(*v),
+            ParsedOrRaw::Raw(_) => None,
+        }
+    }
+    pub fn raw(&self) -> R {
+        match self {
+            ParsedOrRaw::Parsed(p) => (*p).into(),
+            ParsedOrRaw::Raw(v) => *v,
+        }
+    }
+}
+
+impl<P, R> Debug for ParsedOrRaw<P, R>
+where
+    P: Into<R> + Debug + Clone + Copy,
+    R: TryInto<P> + FromByteSlice + ToBytes + Debug + Clone + Copy,
+{
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ParsedOrRaw::Parsed(value) => {
+                write!(f, "{value:?}({:?})", value.clone().into())
+            }
+            ParsedOrRaw::Raw(raw_value) => {
+                write!(f, "<unknown>({:?})", raw_value)
+            }
+        }
+    }
 }
 
 impl<P, R> From<R> for ParsedOrRaw<P, R>

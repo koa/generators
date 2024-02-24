@@ -1,11 +1,15 @@
 //! The IP Connection manages the communication between the API bindings and the Brick Daemon or a WIFI/Ethernet Extension.
-use crate::base58::Uid;
-use crate::bindings::DeviceIdentifier;
+use std::fmt::{Debug, Display, Formatter};
 use std::str;
+use std::str::FromStr;
 
+use crate::base58::{Base58Error, Uid};
+use crate::bindings::DeviceIdentifier;
 use crate::byte_converter::{FromByteSlice, ParsedOrRaw, ToBytes};
 
 pub mod async_io {
+    use std::iter::{FilterMap, MapWhile};
+    use std::process::id;
     use std::{
         borrow::BorrowMut,
         fmt::Debug,
@@ -33,6 +37,7 @@ pub mod async_io {
         Stream, StreamExt,
     };
 
+    use crate::base58::Base58Error;
     use crate::{
         base58::Uid,
         byte_converter::{FromByteSlice, ToBytes},
@@ -161,7 +166,7 @@ pub mod async_io {
             }
             let request = Request::Set { uid: Uid::zero(), function_id: 254, payload: &[] };
             let stream = BroadcastStream::new(self.receiver.resubscribe()).map_while(Self::while_some).filter_map(|p| match p {
-                Ok(p) if p.header.function_id == 253 => Some(EnumerateResponse::from_le_byte_slice(&p.body)),
+                Ok(p) if p.header.function_id == 253 => Result::<EnumerateResponse, Base58Error>::from_le_byte_slice(&p.body).ok(),
                 _ => None,
             });
             let seq = self.next_seq();
@@ -259,10 +264,13 @@ pub mod async_io {
                         if header.uid == uid && header.function_id == function_id {
                             Some(Some(p))
                         } else if header.function_id == 253 {
-                            let enum_paket = EnumerateResponse::from_le_byte_slice(p.body());
-                            if enum_paket.enumeration_type == EnumerationType::Disconnected && Some(uid) == enum_paket.uid.parse().ok() {
-                                // device is disconnected -> end stream
-                                None
+                            if let Ok(enum_paket) = Result::<EnumerateResponse, Base58Error>::from_le_byte_slice(p.body()) {
+                                if enum_paket.uid == uid {
+                                    // device is disconnected -> end stream
+                                    None
+                                } else {
+                                    Some(None)
+                                }
                             } else {
                                 Some(None)
                             }
@@ -425,24 +433,61 @@ impl From<u8> for EnumerationType {
     }
 }
 
+#[derive(Copy, Clone)]
+pub struct Version {
+    major: u8,
+    minor: u8,
+    patch: u8,
+}
+
+impl Display for Version {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+impl Debug for Version {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Version: {}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+impl FromByteSlice for Version {
+    fn from_le_byte_slice(bytes: &[u8]) -> Self {
+        Version { major: bytes[0], minor: bytes[1], patch: bytes[2] }
+    }
+
+    fn bytes_expected() -> usize {
+        3
+    }
+}
+
+impl ToBytes for Version {
+    fn write_to_slice(self, target: &mut [u8]) {
+        target[0] = self.major;
+        target[1] = self.minor;
+        target[2] = self.patch;
+    }
+}
+
 /// Devices send `EnumerateResponse`s when they are connected, disconnected or when an enumeration was
 /// triggered by the user using the [`Enumerate`](crate::ip_connection::IpConnection::enumerate) method.
-#[derive(Clone, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct EnumerateResponse {
     /// The UID of the device.
-    pub uid: String,
+    pub uid: Uid,
     /// UID where the device is connected to.
     /// For a Bricklet this is the UID of the Brick or Bricklet it is connected to.
     /// For a Brick it is the UID of the bottommost Brick in the stack.
     /// For the bottommost Brick in a stack it is "0".
     /// With this information it is possible to reconstruct the complete network topology.
-    pub connected_uid: String,
+    pub connected_uid: Uid,
     /// For Bricks: '0' - '8' (position in stack). For Bricklets: 'a' - 'd' (position on Brick).
     pub position: char,
     /// Major, minor and release number for hardware version.
-    pub hardware_version: [u8; 3],
+    pub hardware_version: Version,
     /// Major, minor and release number for firmware version.
-    pub firmware_version: [u8; 3],
+    pub firmware_version: Version,
     /// A number that represents the device.
     /// The device identifier numbers can be found [here](https://www.tinkerforge.com/en/doc/Software/Device_Identifier.html).
     /// There are also constants for these numbers named following this pattern:
@@ -456,24 +501,26 @@ pub struct EnumerateResponse {
 }
 
 impl EnumerateResponse {
-    pub fn uid_as_number(&self) {}
+    //pub fn uid_as_number(&self) {}
 }
 
-impl FromByteSlice for EnumerateResponse {
-    fn from_le_byte_slice(bytes: &[u8]) -> EnumerateResponse {
-        EnumerateResponse {
-            uid: str::from_utf8(&bytes[0..8])
-                .expect("Could not convert to string. This is a bug in the rust bindings.")
-                .replace('\u{0}', ""),
-            connected_uid: str::from_utf8(&bytes[8..16])
-                .expect("Could not convert to string. This is a bug in the rust bindings.")
-                .replace('\u{0}', ""),
+impl FromByteSlice for Result<EnumerateResponse, Base58Error> {
+    fn from_le_byte_slice(bytes: &[u8]) -> Result<EnumerateResponse, Base58Error> {
+        let uid = Uid::from_str(
+            &str::from_utf8(&bytes[0..8]).expect("Could not convert to string. This is a bug in the rust bindings.").replace('\u{0}', ""),
+        )?;
+        let string =
+            str::from_utf8(&bytes[8..16]).expect("Could not convert to string. This is a bug in the rust bindings.").replace('\u{0}', "");
+        let connected_uid = Uid::from_str(&string)?;
+        Ok(EnumerateResponse {
+            uid,
+            connected_uid,
             position: bytes[16] as char,
-            hardware_version: [bytes[17], bytes[18], bytes[19]],
-            firmware_version: [bytes[20], bytes[21], bytes[22]],
+            hardware_version: Version::from_le_byte_slice(&bytes[17..20]),
+            firmware_version: Version::from_le_byte_slice(&bytes[20..23]),
             device_identifier: ParsedOrRaw::<DeviceIdentifier, u16>::from_le_byte_slice(&bytes[23..25]),
             enumeration_type: EnumerationType::from(bytes[25]),
-        }
+        })
     }
 
     fn bytes_expected() -> usize {

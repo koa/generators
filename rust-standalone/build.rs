@@ -314,6 +314,9 @@ from generators import common",
                     ip_connection::async_io::AsyncIpConnection,
                 };
             ));
+            items.push(parse_quote!(
+                use tokio_stream::StreamExt;
+            ));
 
             println!("Name: {name}");
             println!("Package: {package_name}");
@@ -332,7 +335,7 @@ from generators import common",
                 impl #device_struct_name {
                     pub fn new(uid: Uid, connection: AsyncIpConnection) -> #device_struct_name {
                         Self{
-                            device: Device::new([#av1,#av2,#av3],uid,connection,#name)
+                            device: Device::new(uid,connection,#name)
                         }
                     }
                 }
@@ -484,6 +487,7 @@ from generators import common",
                     ));
                 }
                 //println!("Elements done");
+                let function_id = packet_idx as u8 + 1;
                 if packet_type == TfPacketType::Function {
                     let (request_type, request_size): (Option<Type>, usize) = if in_fields.is_empty() {
                         (None, 0)
@@ -505,7 +509,6 @@ from generators import common",
                         )
                     };
                     let function_name = create_ident(&packet_entry.name.to_case(Case::Snake));
-                    let function_id = packet_idx as u8 + 1;
                     let mut function_statements = Vec::new();
                     if request_type.is_some() {
                         function_statements.push(parse_quote!(let mut payload = [0; #request_size];));
@@ -540,8 +543,19 @@ from generators import common",
                     device_impl.items.push(ImplItem::Fn(function_item));
                 } else if packet_type == TfPacketType::Callback {
                     if !out_fields.is_empty() {
+                        let function_name = create_ident(&format!("{}_stream", packet_entry.name.to_case(Case::Snake)));
                         let struct_name: Ident = create_ident(&format!("{packet_name}Callback"));
                         append_data_object(&mut items, &mut out_fields, &struct_name);
+                        let function_item: ImplItemFn = parse_quote!(
+                            #[doc = #doc_de]
+                            pub async fn #function_name(&mut self) -> impl futures_core::Stream<Item = #struct_name> {
+                                self.device
+                                    .get_callback_receiver(#function_id)
+                                    .await
+                                    .map(|p| #struct_name::from_le_byte_slice(p.body()))
+                            }
+                        );
+                        device_impl.items.push(ImplItem::Fn(function_item));
                     }
                 }
             }
