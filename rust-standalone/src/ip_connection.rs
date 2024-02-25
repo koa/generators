@@ -1,15 +1,16 @@
 //! The IP Connection manages the communication between the API bindings and the Brick Daemon or a WIFI/Ethernet Extension.
-use std::fmt::{Debug, Display, Formatter};
-use std::str;
-use std::str::FromStr;
+use std::{
+    fmt::{Debug, Display, Formatter},
+    str::{self, FromStr},
+};
 
-use crate::base58::{Base58Error, Uid};
-use crate::bindings::DeviceIdentifier;
-use crate::byte_converter::{FromByteSlice, ParsedOrRaw, ToBytes};
+use crate::{
+    base58::{Base58Error, Uid},
+    bindings::DeviceIdentifier,
+    byte_converter::{FromByteSlice, ParsedOrRaw, ToBytes},
+};
 
 pub mod async_io {
-    use std::iter::{FilterMap, MapWhile};
-    use std::process::id;
     use std::{
         borrow::BorrowMut,
         fmt::Debug,
@@ -37,12 +38,10 @@ pub mod async_io {
         Stream, StreamExt,
     };
 
-    use crate::base58::Base58Error;
     use crate::{
-        base58::Uid,
+        base58::{Base58Error, Uid},
         byte_converter::{FromByteSlice, ToBytes},
         error::TinkerforgeError,
-        ip_connection::EnumerationType,
         ip_connection::{EnumerateResponse, PacketHeader},
     };
 
@@ -433,7 +432,7 @@ impl From<u8> for EnumerationType {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
 pub struct Version {
     major: u8,
     minor: u8,

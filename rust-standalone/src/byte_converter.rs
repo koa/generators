@@ -56,11 +56,72 @@ impl<const N: usize, T: Default + Copy + FromByteSlice> FromByteSlice for [T; N]
     }
 }
 
-impl<const N: usize, T: Default + Copy + FromByteSlice + ToBytes> ToBytes for [T; N] {
+impl<const N: usize> ToBytes for [u8; N] {
     fn write_to_slice(self, target: &mut [u8]) {
-        let component_size = T::bytes_expected();
-        for i in 0..N {
-            self[i].write_to_slice(&mut target[i * component_size..(i + 1) * component_size]);
+        write_bytes_to_target(self, target);
+    }
+}
+impl<const N: usize> ToBytes for [i8; N] {
+    fn write_to_slice(self, target: &mut [u8]) {
+        write_bytes_to_target(self, target);
+    }
+}
+impl<const N: usize> ToBytes for [u16; N] {
+    fn write_to_slice(self, target: &mut [u8]) {
+        write_bytes_to_target(self, target);
+    }
+}
+impl<const N: usize> ToBytes for [i16; N] {
+    fn write_to_slice(self, target: &mut [u8]) {
+        write_bytes_to_target(self, target);
+    }
+}
+impl<const N: usize> ToBytes for [u32; N] {
+    fn write_to_slice(self, target: &mut [u8]) {
+        write_bytes_to_target(self, target);
+    }
+}
+impl<const N: usize> ToBytes for [i32; N] {
+    fn write_to_slice(self, target: &mut [u8]) {
+        write_bytes_to_target(self, target);
+    }
+}
+impl<const N: usize> ToBytes for [u64; N] {
+    fn write_to_slice(self, target: &mut [u8]) {
+        write_bytes_to_target(self, target);
+    }
+}
+impl<const N: usize> ToBytes for [i64; N] {
+    fn write_to_slice(self, target: &mut [u8]) {
+        write_bytes_to_target(self, target);
+    }
+}
+impl<const N: usize> ToBytes for [char; N] {
+    fn write_to_slice(self, target: &mut [u8]) {
+        write_bytes_to_target(self, target);
+    }
+}
+impl<const N: usize> ToBytes for [f32; N] {
+    fn write_to_slice(self, target: &mut [u8]) {
+        write_bytes_to_target(self, target);
+    }
+}
+
+#[inline]
+fn write_bytes_to_target<T: Default + Copy + FromByteSlice + ToBytes, const N: usize>(value: [T; N], target: &mut [u8]) {
+    let component_size = T::bytes_expected();
+    for i in 0..N {
+        value[i].write_to_slice(&mut target[i * component_size..(i + 1) * component_size]);
+    }
+}
+
+impl<const N: usize> ToBytes for [bool; N] {
+    fn write_to_slice(self, target: &mut [u8]) {
+        for i in 0..(N + 7) / 8 {
+            target[i] = 0;
+        }
+        for (i, b) in self.into_iter().enumerate() {
+            target[i / 8] |= (b as u8) << (i % 8);
         }
     }
 }

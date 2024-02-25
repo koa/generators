@@ -84,6 +84,12 @@ struct PacketEntry<'a> {
 }
 
 #[derive(Debug, FromPyObject)]
+struct PacketElementTypeListEntry<'a> {
+    #[pyo3(item)]
+    name: &'a str,
+}
+
+#[derive(Debug, FromPyObject)]
 struct ElementEntry<'a>(&'a str, &'a str, u8, &'a str, &'a PyAny);
 
 #[derive(Debug, FromPyObject)]
@@ -100,6 +106,8 @@ enum TfValueType {
     I16,
     U32,
     I32,
+    U64,
+    I64,
     Bool,
     Char,
     String,
@@ -140,6 +148,12 @@ impl ToTokens for TfValueType {
                 TfValueType::Float => {
                     quote!(f32)
                 }
+                TfValueType::U64 => {
+                    quote!(u64)
+                }
+                TfValueType::I64 => {
+                    quote!(i64)
+                }
             }
             .into_token_stream(),
         )
@@ -154,12 +168,16 @@ impl TfValueType {
             Some(Self::U32)
         } else if value == "uint16" {
             Some(Self::U16)
+        } else if value == "uint64" {
+            Some(Self::U64)
         } else if value == "int8" {
             Some(Self::I8)
         } else if value == "int16" {
             Some(Self::I16)
         } else if value == "int32" {
             Some(Self::I32)
+        } else if value == "int64" {
+            Some(Self::I64)
         } else if value == "bool" {
             Some(Self::Bool)
         } else if value == "char" {
@@ -190,6 +208,8 @@ impl TfValueType {
             TfValueType::I16 => string.parse::<i16>()?.into_token_stream(),
             TfValueType::I32 => string.parse::<i32>()?.into_token_stream(),
             TfValueType::Float => string.parse::<i32>()?.into_token_stream(),
+            TfValueType::U64 => string.parse::<u64>()?.into_token_stream(),
+            TfValueType::I64 => string.parse::<i64>()?.into_token_stream(),
         })
     }
     fn bytecount(&self, array_length: usize) -> usize {
@@ -204,6 +224,8 @@ impl TfValueType {
             TfValueType::Char => array_length,
             TfValueType::String => array_length,
             TfValueType::Float => array_length * 4,
+            TfValueType::U64 => array_length * 8,
+            TfValueType::I64 => array_length * 8,
         }
     }
 }
@@ -278,21 +300,21 @@ from generators import common",
             let module = PyModule::from_code(py, &content, "", "")?;
             let com_struct = module.getattr("com")?;
             let tf_device = TfDevice::extract(com_struct)?;
-            let name = tf_device.name;
+            let raw_package_name = tf_device.name;
             if Some(tf_device.device_identifier) == last_device_id {
                 continue;
             }
             last_device_id = Some(tf_device.device_identifier);
-            println!("Python file: {:?}: {name}", entry.path());
+            println!("Python file: {:?}: {raw_package_name}", entry.path());
 
-            if name == "RS485" || name == "Unknown" {
+            if raw_package_name == "RS485" || raw_package_name == "Unknown" {
                 // probleme mit doppelten einträgen in der config
                 continue;
             }
 
-            let package_name = name.to_case(Case::Snake);
+            let package_name = raw_package_name.to_case(Case::Snake);
             let device_struct_name = Ident::new(
-                &format!("{}{}", name.to_case(Case::UpperCamel), tf_device.category.to_case(Case::UpperCamel)),
+                &format!("{}{}", raw_package_name.to_case(Case::UpperCamel), tf_device.category.to_case(Case::UpperCamel)),
                 Span::call_site(),
             );
             let value = tf_device.device_identifier;
@@ -301,11 +323,12 @@ from generators import common",
                 device_variants.push(parse_quote!(#device_struct_name));
                 device_encode_arms.push(parse_quote!(DeviceIdentifier::#device_struct_name =>#value));
                 device_parse_arms.push(parse_quote!(#value => Ok(DeviceIdentifier::#device_struct_name)));
-                device_name_arms.push(parse_quote!(DeviceIdentifier::#device_struct_name =>#name));
+                device_name_arms.push(parse_quote!(DeviceIdentifier::#device_struct_name =>#raw_package_name));
             }
 
             let mut items = Vec::new();
             items.push(parse_quote!(
+                #[allow(unused_imports)]
                 use crate::{
                     base58::Uid,
                     byte_converter::{FromByteSlice, ToBytes},
@@ -315,10 +338,15 @@ from generators import common",
                 };
             ));
             items.push(parse_quote!(
+                #[allow(unused_imports)]
                 use tokio_stream::StreamExt;
             ));
+            items.push(parse_quote!(
+                #[allow(unused_imports)]
+                use std::convert::TryInto;
+            ));
 
-            println!("Name: {name}");
+            println!("Name: {raw_package_name}");
             println!("Package: {package_name}");
             //println!("Tf Device: {tf_device:#?}");
             items.push(parse_quote!(
@@ -328,14 +356,15 @@ from generators import common",
                 }
             ));
             let api_version = tf_device.api_version;
+            /*
             let av1 = api_version[0];
             let av2 = api_version[1];
-            let av3 = api_version[2];
+            let av3 = api_version[2];*/
             let mut device_impl: ItemImpl = parse_quote!(
                 impl #device_struct_name {
                     pub fn new(uid: Uid, connection: AsyncIpConnection) -> #device_struct_name {
                         Self{
-                            device: Device::new(uid,connection,#name)
+                            device: Device::new(uid,connection,#raw_package_name)
                         }
                     }
                 }
@@ -365,7 +394,6 @@ from generators import common",
                         #variants
                     }
                 ));
-
                 let encode_match = ExprMatch {
                     attrs: vec![],
                     match_token: Default::default(),
@@ -390,6 +418,25 @@ from generators import common",
                         }
                     }
                 )));
+                items.push(parse_quote!(
+                    impl ToBytes for #enum_name_ident {
+                        fn write_to_slice(self,target: &mut [u8]){
+                            <#enum_name_ident as Into<#ty>>::into(self).write_to_slice(target);
+                        }
+                    }
+                ));
+                let type_size = ty.bytecount(1);
+                items.push(parse_quote!(
+                    impl FromByteSlice for #enum_name_ident {
+                        fn from_le_byte_slice(bytes: &[u8])->Self{
+                            #ty::from_le_byte_slice(bytes).try_into().expect("unsupported enum value")
+                        }
+                        fn bytes_expected() -> usize{
+                            #type_size
+                        }
+                    }
+                ));
+
                 items.push(Item::Impl(parse_quote!(
                     impl std::convert::TryInto<#enum_name_ident> for #ty {
                         type Error = ();
@@ -426,71 +473,108 @@ from generators import common",
                     let repeat_count = usize::extract(element_tuple.get_item(2)?)?;
                     let direction_str =
                         element_tuple.get_item(3)?.downcast::<PyString>().expect("direction of element is not a string").to_str()?;
-                    let (constant_group, unit) = if element_tuple.len() > 4 {
+                    let subelements = if element_tuple.len() > 4 {
                         let details = element_tuple.get_item(4)?;
                         if let Ok(params) = details.downcast::<PyDict>() {
                             let unit = string_from_dict(params, "unit").expect("Cannot parse unit of element");
                             let constant_group = string_from_dict(params, "constant_group")?;
-                            (constant_group, unit)
+                            vec![(constant_group, create_ident(&element_name_rust.to_case(Case::Snake)), unit)]
                         } else if let Ok(param_list) = details.downcast::<PyList>() {
-                            (None, None)
+                            if param_list.len() == repeat_count {
+                                param_list
+                                    .into_iter()
+                                    .map(|e| e.downcast::<PyDict>().expect("List entry is not a dict"))
+                                    .map(|e| {
+                                        let name = string_from_dict(e, "name")
+                                            .expect("Error extracting name")
+                                            .expect("No name attribute in list entry");
+                                        let constant_group =
+                                            string_from_dict(e, "constant_group").expect("Error extracting constant group");
+                                        let unit = string_from_dict(e, "unit").expect("Error extracting unit");
+                                        let element_name_rust = format!("{element_name} {}", name).to_case(Case::Snake);
+                                        (constant_group, create_ident(&element_name_rust), unit)
+                                    })
+                                    .collect()
+                            } else {
+                                panic!("List length not matching count")
+                            }
                         } else {
-                            (None, None)
+                            vec![]
                         }
                     } else {
-                        (None, None)
+                        vec![]
                     };
-                    let fields = if direction_str == "in" {
-                        &mut in_fields
+                    let (fields, wrap_enum) = if direction_str == "in" {
+                        (&mut in_fields, true)
                     } else if direction_str == "out" {
-                        &mut out_fields
+                        (&mut out_fields, false)
                     } else {
-                        println!("Unknown direction: {direction_str}");
-                        continue;
+                        panic!("Unknown direction: {direction_str}");
                     };
-                    let ident = Some(create_ident(&element_name_rust.to_case(Case::Snake)));
-                    let (ty, field_size): (Type, _) = if let Some(ty) = transfer_type {
-                        (
-                            if repeat_count > 1 && ty == TfValueType::String {
-                                parse_quote!([char;#repeat_count])
+                    let ident = create_ident(&element_name_rust.to_case(Case::Snake));
+                    let (create_fields, field_size): (Box<[(Type, Ident)]>, _) = if let Some(ty) = transfer_type {
+                        if repeat_count > 1 && ty == TfValueType::String {
+                            (vec![(parse_quote!([char;#repeat_count]), ident)].into(), ty.bytecount(repeat_count))
+                        } else {
+                            let base_type = ty.to_token_stream();
+                            let found_types: Box<[(Type, Ident)]> = if subelements.is_empty() {
+                                vec![(parse_quote!(#base_type), ident)].into()
                             } else {
-                                let base_type = if let Some(constant_group) = constant_group {
-                                    let constant_type_name = Some(create_ident(&constant_group.to_case(Case::UpperCamel)));
-                                    parse_quote!(crate::byte_converter::ParsedOrRaw<#constant_type_name,#ty>)
-                                } else {
-                                    ty.to_token_stream()
-                                };
-                                if repeat_count > 1 {
-                                    parse_quote!([#base_type;#repeat_count])
-                                } else {
-                                    parse_quote!(#base_type)
-                                }
-                            },
-                            ty.bytecount(repeat_count),
-                        )
+                                subelements
+                                    .into_iter()
+                                    .map(|(constant_group, ident, unit)| {
+                                        if let Some(constant_group) = constant_group {
+                                            let constant_type_name = Some(create_ident(&constant_group.to_case(Case::UpperCamel)));
+                                            (
+                                                if wrap_enum {
+                                                    parse_quote!(#constant_type_name)
+                                                } else {
+                                                    parse_quote!(crate::byte_converter::ParsedOrRaw<#constant_type_name,#ty>)
+                                                },
+                                                ident,
+                                            )
+                                        } else {
+                                            (parse_quote!(#base_type), ident)
+                                        }
+                                    })
+                                    .collect()
+                            };
+                            if found_types.len() == 1 && repeat_count > 1 {
+                                let (base_type, ident) = &found_types[0];
+                                (vec![(parse_quote!([#base_type;#repeat_count]), ident.clone())].into(), ty.bytecount(repeat_count))
+                            } else if found_types.len() == repeat_count {
+                                (found_types, ty.bytecount(1))
+                            } else {
+                                panic!("Count mismatch");
+                            }
+                        }
                     } else {
-                        println!(" ########### Unknown type: {}", transfer_type_str);
-                        continue;
+                        panic!(" ########### Unknown type: {}", transfer_type_str);
                     };
 
-                    //let ty = if repeat_count > 1 { parse_quote!([#base_type;#repeat_count]) } else { parse_quote!(#base_type) };
-                    fields.push((
-                        Field {
-                            attrs: vec![],
-                            vis: Visibility::Public(Pub::default()),
-                            mutability: FieldMutability::None,
-                            ident,
-                            colon_token: None,
-                            ty,
-                        },
-                        field_size,
-                    ));
+                    for (ty, ident) in create_fields.into_iter().cloned() {
+                        fields.push((
+                            Field {
+                                attrs: vec![],
+                                vis: Visibility::Public(Pub::default()),
+                                mutability: FieldMutability::None,
+                                ident: Some(ident),
+                                colon_token: None,
+                                ty,
+                            },
+                            field_size,
+                        ));
+                    }
                 }
                 //println!("Elements done");
                 let function_id = packet_idx as u8 + 1;
+                //println!("Function: {function_id}, type: {packet_type:?}: {packet_name}");
                 if packet_type == TfPacketType::Function {
                     let (request_type, request_size): (Option<Type>, usize) = if in_fields.is_empty() {
                         (None, 0)
+                    } else if in_fields.len() == 1 {
+                        let (first_field, length) = in_fields.remove(0);
+                        (Some(first_field.ty), length)
                     } else {
                         let name = format!("{packet_name}Request");
                         let struct_name: Ident = create_ident(&name);
@@ -499,6 +583,13 @@ from generators import common",
                     };
                     let (response_type, response_line): (Type, Option<Stmt>) = if out_fields.is_empty() {
                         (parse_quote!(()), None)
+                    } else if out_fields.len() == 1 {
+                        let (first_field, length) = out_fields.remove(0);
+                        let length_literal: Lit = parse_quote!(#length);
+                        let method_ident = parse_quote!(from_le_byte_slice);
+                        let args = parse_quote!((&result.body()[0..#length_literal]));
+                        let read_method_call = static_method_call(&first_field.ty, method_ident, args);
+                        (first_field.ty, Some(Stmt::Expr(parse_quote!(Ok(#read_method_call)), None)))
                     } else {
                         let name = format!("{packet_name}Response");
                         let struct_name: Ident = create_ident(&name);
@@ -542,11 +633,37 @@ from generators import common",
 
                     device_impl.items.push(ImplItem::Fn(function_item));
                 } else if packet_type == TfPacketType::Callback {
-                    if !out_fields.is_empty() {
-                        let function_name = create_ident(&format!("{}_stream", packet_entry.name.to_case(Case::Snake)));
+                    let function_name = create_ident(&format!("{}_stream", packet_entry.name.to_case(Case::Snake)));
+                    if out_fields.is_empty() {
+                        device_impl.items.push(ImplItem::Fn(parse_quote!(
+                            #[doc = #doc_de]
+                            pub async fn #function_name(&mut self) -> impl futures_core::Stream<Item = ()> {
+                                self.device
+                                    .get_callback_receiver(#function_id)
+                                    .await
+                                    .map(|_| ())
+                            }
+                        )));
+                    } else if out_fields.len() == 1 {
+                        let (first_field, length) = out_fields.remove(0);
+                        let length_literal: Lit = parse_quote!(#length);
+                        let method_ident = parse_quote!(from_le_byte_slice);
+                        let args = parse_quote!((&p.body()[0..#length_literal]));
+                        let read_method_call = static_method_call(&first_field.ty, method_ident, args);
+                        let struct_name = first_field.ty;
+                        device_impl.items.push(ImplItem::Fn(parse_quote!(
+                            #[doc = #doc_de]
+                            pub async fn #function_name(&mut self) -> impl futures_core::Stream<Item = #struct_name> {
+                                self.device
+                                    .get_callback_receiver(#function_id)
+                                    .await
+                                    .map(|p| #read_method_call)
+                            }
+                        )));
+                    } else {
                         let struct_name: Ident = create_ident(&format!("{packet_name}Callback"));
                         append_data_object(&mut items, &mut out_fields, &struct_name);
-                        let function_item: ImplItemFn = parse_quote!(
+                        device_impl.items.push(ImplItem::Fn(parse_quote!(
                             #[doc = #doc_de]
                             pub async fn #function_name(&mut self) -> impl futures_core::Stream<Item = #struct_name> {
                                 self.device
@@ -554,8 +671,7 @@ from generators import common",
                                     .await
                                     .map(|p| #struct_name::from_le_byte_slice(p.body()))
                             }
-                        );
-                        device_impl.items.push(ImplItem::Fn(function_item));
+                        )));
                     }
                 }
             }
@@ -575,7 +691,7 @@ from generators import common",
     device_parse_arms.push(parse_quote!(_ => Err(())));
 
     bindings_content.push(Item::Enum(parse_quote!(
-        #[derive(Copy,Clone,Eq,PartialEq,Debug)]
+        #[derive(Copy,Clone,Eq,PartialEq,Debug,Ord, PartialOrd)]
         pub enum DeviceIdentifier{
             #device_variants
         }
@@ -583,7 +699,7 @@ from generators import common",
     let name_match = match_self(device_name_arms);
     bindings_content.push(Item::Impl(parse_quote!(
         impl DeviceIdentifier {
-            fn name(self) -> &'static str {
+            pub fn name(self) -> &'static str {
                 #name_match
             }
         }
@@ -679,10 +795,6 @@ fn append_data_object(items: &mut Vec<Item>, fields: &[(Field, usize)], struct_n
     offset
 }
 
-fn bytes_expected_expr(ty: &Type) -> Expr {
-    static_method_call(ty, parse_quote!(bytes_expected), parse_quote!(()))
-}
-
 fn static_method_call(ty: &Type, method: Ident, args: Punctuated<Expr, Comma>) -> Expr {
     if let Type::Path(TypePath { qself: None, path: Path { leading_colon: _, segments } }) = &ty {
         let seg = segments.last();
@@ -693,16 +805,16 @@ fn static_method_call(ty: &Type, method: Ident, args: Punctuated<Expr, Comma>) -
                     type_path.push(segment.clone());
                 }
                 type_path.push(parse_quote!(#ident));
-                parse_quote!(#type_path::#bracketed::#method#args)
+                parse_quote!(#type_path::#bracketed::#method #args)
             } else {
-                parse_quote!(#ident::#bracketed::#method#args)
+                parse_quote!(#ident::#bracketed::#method #args)
             };
         }
     }
     if let Type::Array(_) = ty {
-        parse_quote!(<#ty>::#method#args)
+        parse_quote!(<#ty>::#method #args)
     } else {
-        parse_quote!(#ty::#method#args)
+        parse_quote!(#ty::#method #args)
     }
 }
 

@@ -2,7 +2,7 @@
 name = "tinkerforge-async"
 version = "0.0.6"
 authors = ["Erik Fleckstein <erik@tinkerforge.com>", "Andreas König <koa@panter.ch>"]
-edition = "2018"
+edition = "2021"
 rust = "1.74.1"
 description = "Async Rust API bindings for https://www.tinkerforge.com Bricks and Bricklets, based on Version: 2.0.20"
 license = "CC0-1.0 OR MIT OR Apache-2.0"

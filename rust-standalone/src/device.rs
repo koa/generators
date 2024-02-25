@@ -8,7 +8,6 @@ use lazy_static::lazy_static;
 #[cfg(feature = "prometheus")]
 use prometheus::{register_histogram_vec, HistogramVec};
 
-use crate::ip_connection::Version;
 use crate::{
     base58::Uid,
     error::TinkerforgeError,
