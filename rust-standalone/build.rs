@@ -1,4 +1,4 @@
-use std::{collections::HashMap, env, env::current_dir, fs, path};
+use std::{collections::HashMap, default::Default, env, env::current_dir, fs, path};
 
 use convert_case::{Case, Casing};
 use prettyplease::unparse;
@@ -6,7 +6,7 @@ use proc_macro2::{Span, TokenStream};
 use pyo3::{
     exceptions::PyTypeError,
     prelude::PyModule,
-    types::{PyDict, PyList, PyString, PyTuple},
+    types::{PyDict, PyInt, PyList, PyString, PyTuple},
     FromPyObject, PyAny, PyErr, PyResult, Python,
 };
 use quote::{quote, ToTokens, TokenStreamExt};
@@ -14,8 +14,8 @@ use syn::{
     parse_quote,
     punctuated::Punctuated,
     token::{Comma, PathSep, Pub},
-    Arm, Block, Expr, ExprMatch, Field, FieldMutability, FieldValue, File, Ident, ImplItem, ImplItemFn, Item, ItemImpl, ItemMod, Lit, Path,
-    PathArguments, PathSegment, Stmt, Type, TypePath, Variant, Visibility,
+    Arm, Block, Expr, ExprMatch, Field, FieldMutability, FieldValue, File, Ident, ImplItem, ImplItemFn, Item, ItemImpl, ItemMod, ItemTrait,
+    Lit, Path, PathArguments, PathSegment, Stmt, TraitItem, TraitItemFn, Type, TypePath, Variant, Visibility,
 };
 
 fn main() -> Result<(), PyErr> {
@@ -56,7 +56,7 @@ struct TfDevice<'a> {
     #[pyo3(item)]
     constant_groups: Vec<ConstantGroupEntry<'a>>,
     #[pyo3(item)]
-    packets: Vec<PacketEntry<'a>>,
+    packets: Vec<&'a PyAny>,
 }
 
 #[derive(Debug, FromPyObject)]
@@ -79,8 +79,8 @@ struct PacketEntry<'a> {
     elements: Vec<&'a PyAny>,
     #[pyo3(item)]
     doc: &'a PyAny,
-    #[pyo3(item)]
-    since_firmware: [u8; 3],
+    //#[pyo3(item)]
+    //since_firmware: [u8; 3],
 }
 
 #[derive(Debug, FromPyObject)]
@@ -294,18 +294,126 @@ from generators import common",
     let mut device_name_arms = Vec::new();
     let mut last_device_id = None;
 
-    for entry in dir.into_iter().flatten() {
-        if entry.path().file_name().and_then(|f| f.to_str()).map(|n| n.ends_with(".py")).unwrap_or(false) {
-            let content = fs::read_to_string(entry.path())?;
-            let module = PyModule::from_code(py, &content, "", "")?;
-            let com_struct = module.getattr("com")?;
+    let found_modules = dir
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            if let Some(filename) = entry.path().file_name().and_then(|f| f.to_str()) {
+                if filename.ends_with(".py") {
+                    let content = fs::read_to_string(entry.path()).ok()?;
+                    let module_name = &filename[0..filename.len() - 3];
+                    let module = PyModule::from_code(py, &content, filename, module_name).ok()?;
+                    Some((module_name.to_string().into_boxed_str(), module))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+        .collect::<HashMap<_, _>>();
+    let mut common_items = Vec::new();
+    let mut features = HashMap::<_, (Vec<_>, Vec<_>)>::new();
+    for (module_name, module) in found_modules.iter() {
+        if let Ok(com_struct) = module.getattr("common_constant_groups") {
+            for common_constant_group_entry_dict in
+                com_struct.iter().expect("common_constant_groups is not a list").map(|e| e.expect("cannot access list entry"))
+            {
+                let feature = String::extract(common_constant_group_entry_dict.get_item("feature").expect("Missing feature"))
+                    .expect("Feature is not a string")
+                    .into_boxed_str();
+                let common_constant_group_entry = ConstantGroupEntry::extract(common_constant_group_entry_dict)
+                    .expect("Cannot parse common_constant_groups of {module_name}");
+                process_constant_group(&mut features.entry(feature).or_default().0, common_constant_group_entry);
+            }
+        }
+        if let Ok(com_packets) = module.getattr("common_packets") {
+            for com_packet in com_packets.iter().expect("Packets are no list").map(|p| p.expect("Cannot decode packet")) {
+                let feature = String::extract(com_packet.get_item("feature").expect("Missing feature")).expect("Feature is not a string");
+                let mut feature_data = features.entry(feature.into_boxed_str()).or_default();
+                if com_packet.get_item("is_virtual").ok().map(bool::extract).and_then(<PyResult<bool>>::ok).unwrap_or(false) {
+                    continue;
+                }
+                let packet_data = PacketEntry::extract(com_packet).expect("Cannot unpack packet entry");
+                let function_id: u8 = com_packet
+                    .get_item("function_id")
+                    .expect("Missing function id")
+                    .downcast::<PyInt>()
+                    .expect("Function_ID is not a number")
+                    .extract()
+                    .expect("Function id is not u8");
+                feature_data.1.push((function_id, packet_data));
+            }
+        }
+    }
+    let mut feature_trait_impls = HashMap::<_, (Path, Vec<ImplItemFn>)>::new();
+    for (feature_name, (mut constants, packets)) in features {
+        let trait_name = create_ident(&feature_name.as_ref().to_case(Case::UpperCamel));
+        let feature_package_ident = create_ident(&feature_name.as_ref().to_case(Case::Snake));
+        let base_package_path = parse_quote!(crate::bindings::common::#feature_package_ident);
+        println!("{trait_name} {feature_name}");
+        let mut trait_helper_structs = Vec::new();
+        trait_helper_structs.append(&mut constants);
+        let mut trait_items = Vec::<TraitItem>::new();
+
+        let mut item_impls = Vec::with_capacity(packets.len());
+        for (function_id, packet_entry) in packets {
+            let mut function = generate_packet_element_item(&mut trait_helper_structs, function_id, &packet_entry, &base_package_path)?;
+
+            let mut attrs = function.attrs.clone();
+            attrs.push(parse_quote!(#[allow(async_fn_in_trait)]));
+            trait_items.push(TraitItem::Fn(TraitItemFn { attrs, sig: function.sig.clone(), default: None, semi_token: None }));
+            function.vis = Visibility::Inherited;
+            item_impls.push(function);
+        }
+        feature_trait_impls.insert(feature_name, (parse_quote!(#base_package_path::#trait_name), item_impls));
+        trait_helper_structs.push(Item::Trait(ItemTrait {
+            attrs: vec![],
+            vis: Visibility::Public(Default::default()),
+            unsafety: None,
+            auto_token: None,
+            restriction: None,
+            trait_token: Default::default(),
+            ident: trait_name,
+            generics: Default::default(),
+            colon_token: None,
+            supertraits: Default::default(),
+            brace_token: Default::default(),
+            items: trait_items,
+        }));
+        common_items.push(Item::Mod(ItemMod {
+            attrs: vec![],
+            vis: Visibility::Public(Default::default()),
+            unsafety: None,
+            mod_token: Default::default(),
+            ident: feature_package_ident,
+            content: Some((Default::default(), trait_helper_structs)),
+            semi: None,
+        }));
+    }
+    println!("Features: ");
+    for feature_name in feature_trait_impls.keys() {
+        println!("- {feature_name}");
+    }
+    bindings_content.push(Item::Mod(ItemMod {
+        attrs: vec![],
+        vis: Visibility::Public(Default::default()),
+        unsafety: None,
+        mod_token: Default::default(),
+        ident: create_ident("common"),
+        content: Some((Default::default(), common_items)),
+        semi: None,
+    }));
+
+    for (module_name, module) in found_modules {
+        if let Ok(com_struct) = module.getattr("com") {
             let tf_device = TfDevice::extract(com_struct)?;
             let raw_package_name = tf_device.name;
             if Some(tf_device.device_identifier) == last_device_id {
-                continue;
+                //continue;
             }
             last_device_id = Some(tf_device.device_identifier);
-            println!("Python file: {:?}: {raw_package_name}", entry.path());
+            println!("Python file: {:?}: {raw_package_name}", module_name);
 
             if raw_package_name == "RS485" || raw_package_name == "Unknown" {
                 // probleme mit doppelten einträgen in der config
@@ -313,6 +421,8 @@ from generators import common",
             }
 
             let package_name = raw_package_name.to_case(Case::Snake);
+            let package_ident = create_ident(&package_name);
+            let package_path = parse_quote!(crate::bindings::#package_ident);
             let device_struct_name = Ident::new(
                 &format!("{}{}", raw_package_name.to_case(Case::UpperCamel), tf_device.category.to_case(Case::UpperCamel)),
                 Span::call_site(),
@@ -329,13 +439,7 @@ from generators import common",
             let mut items = Vec::new();
             items.push(parse_quote!(
                 #[allow(unused_imports)]
-                use crate::{
-                    base58::Uid,
-                    byte_converter::{FromByteSlice, ToBytes},
-                    device::Device,
-                    error::TinkerforgeError,
-                    ip_connection::async_io::AsyncIpConnection,
-                };
+                use crate::byte_converter::{FromByteSlice, ToBytes};
             ));
             items.push(parse_quote!(
                 #[allow(unused_imports)]
@@ -352,7 +456,7 @@ from generators import common",
             items.push(parse_quote!(
                 #[derive(Clone, Debug)]
                 pub struct #device_struct_name {
-                    device: Device,
+                    device: crate::device::Device,
                 }
             ));
             let api_version = tf_device.api_version;
@@ -362,326 +466,51 @@ from generators import common",
             let av3 = api_version[2];*/
             let mut device_impl: ItemImpl = parse_quote!(
                 impl #device_struct_name {
-                    pub fn new(uid: Uid, connection: AsyncIpConnection) -> #device_struct_name {
+                    pub fn new(uid: crate::base58::Uid, connection: crate::ip_connection::async_io::AsyncIpConnection) -> #device_struct_name {
                         Self{
-                            device: Device::new(uid,connection,#raw_package_name)
+                            device: crate::device::Device::new(uid,connection,#raw_package_name)
                         }
                     }
                 }
             );
             for group in tf_device.constant_groups {
-                let camel_name = group.name.to_case(Case::UpperCamel);
-                println!("Constant group: {}", group.name);
-                let ty = if let Some(ty) = TfValueType::try_parse_type(group.r#type) {
-                    ty
-                } else {
-                    continue;
-                };
-                let enum_name_ident = create_ident(&camel_name);
-                let mut variants: Punctuated<Variant, Comma> = Default::default();
-                let mut encode_arms = vec![];
-                let mut parse_arms = vec![];
-                for (name, value) in group.constants {
-                    let variant_ident = create_ident(&name.to_case(Case::UpperCamel));
-                    variants.push(parse_quote!(#variant_ident));
-                    let value = ty.parse_token_value(value)?;
-                    encode_arms.push(parse_quote!(#enum_name_ident::#variant_ident =>#value));
-                    parse_arms.push(parse_quote!(#value => Ok(#enum_name_ident::#variant_ident)))
-                }
-                items.push(parse_quote!(
-                    #[derive(Copy,Clone,Eq,PartialEq,Debug)]
-                    pub enum #enum_name_ident{
-                        #variants
-                    }
-                ));
-                let encode_match = ExprMatch {
-                    attrs: vec![],
-                    match_token: Default::default(),
-                    expr: Box::new(parse_quote!(self)),
-                    brace_token: Default::default(),
-                    arms: encode_arms,
-                };
-
-                parse_arms.push(parse_quote!(_ => Err(())));
-                let parse_match = ExprMatch {
-                    attrs: vec![],
-                    match_token: Default::default(),
-                    expr: Box::new(parse_quote!(self)),
-                    brace_token: Default::default(),
-                    arms: parse_arms,
-                };
-
-                items.push(Item::Impl(parse_quote!(
-                    impl Into<#ty> for #enum_name_ident {
-                        fn into(self) -> #ty {
-                            #encode_match
-                        }
-                    }
-                )));
-                items.push(parse_quote!(
-                    impl ToBytes for #enum_name_ident {
-                        fn write_to_slice(self,target: &mut [u8]){
-                            <#enum_name_ident as Into<#ty>>::into(self).write_to_slice(target);
-                        }
-                    }
-                ));
-                let type_size = ty.bytecount(1);
-                items.push(parse_quote!(
-                    impl FromByteSlice for #enum_name_ident {
-                        fn from_le_byte_slice(bytes: &[u8])->Self{
-                            #ty::from_le_byte_slice(bytes).try_into().expect("unsupported enum value")
-                        }
-                        fn bytes_expected() -> usize{
-                            #type_size
-                        }
-                    }
-                ));
-
-                items.push(Item::Impl(parse_quote!(
-                    impl std::convert::TryInto<#enum_name_ident> for #ty {
-                        type Error = ();
-                        fn try_into(self) -> Result<#enum_name_ident, Self::Error> {
-                            #parse_match
-                        }
-                    }
-                )));
+                process_constant_group(&mut items, group);
             }
-            for (packet_idx, packet_entry) in tf_device.packets.iter().enumerate() {
-                let packet_name = packet_entry.name.to_case(Case::UpperCamel);
-                let packet_type = if let Some(ty) = TfPacketType::try_parse_type(packet_entry.r#type) {
-                    ty
+            let mut function_id: u8 = 0;
+            for packet_entry_any in tf_device.packets.iter() {
+                let packet_entry = PacketEntry::extract(packet_entry_any).expect("Cannot unpack packet entry");
+                function_id = if let Some(fid) =
+                    packet_entry_any.get_item("function_id").ok().map(|fid| fid.downcast::<PyInt>().expect("Function_ID is not a number"))
+                {
+                    fid.extract().expect("Cannot extract function id")
                 } else {
-                    println!("Unknown Packet type: {}", packet_entry.r#type);
-                    continue;
+                    function_id + 1
                 };
-                let doc_list = packet_entry.doc.downcast::<PyList>()?;
-                let doc = doc_list.get_item(1)?.downcast::<PyDict>()?;
-                println!("Packet: {packet_name}");
-                let doc_de = doc.get_item("de")?.map(|v| v.to_string()).unwrap_or_default();
-                //println!("Hit: {packet_entry:#?}");
-                //println!("Doc: {}", doc_de);
-                let mut in_fields = Vec::new();
-                let mut out_fields = Vec::new();
-                for element_entry in &packet_entry.elements {
-                    let element_tuple = element_entry.downcast::<PyTuple>()?;
 
-                    let element_name = element_tuple.get_item(0)?.to_string();
-                    let element_name_rust = element_name.to_case(Case::Camel);
-                    let transfer_type_str =
-                        element_tuple.get_item(1)?.downcast::<PyString>().expect("Type of element is not a string").to_str()?;
-                    let transfer_type = TfValueType::try_parse_type(transfer_type_str);
-                    let repeat_count = usize::extract(element_tuple.get_item(2)?)?;
-                    let direction_str =
-                        element_tuple.get_item(3)?.downcast::<PyString>().expect("direction of element is not a string").to_str()?;
-                    let subelements = if element_tuple.len() > 4 {
-                        let details = element_tuple.get_item(4)?;
-                        if let Ok(params) = details.downcast::<PyDict>() {
-                            let unit = string_from_dict(params, "unit").expect("Cannot parse unit of element");
-                            let constant_group = string_from_dict(params, "constant_group")?;
-                            vec![(constant_group, create_ident(&element_name_rust.to_case(Case::Snake)), unit)]
-                        } else if let Ok(param_list) = details.downcast::<PyList>() {
-                            if param_list.len() == repeat_count {
-                                param_list
-                                    .into_iter()
-                                    .map(|e| e.downcast::<PyDict>().expect("List entry is not a dict"))
-                                    .map(|e| {
-                                        let name = string_from_dict(e, "name")
-                                            .expect("Error extracting name")
-                                            .expect("No name attribute in list entry");
-                                        let constant_group =
-                                            string_from_dict(e, "constant_group").expect("Error extracting constant group");
-                                        let unit = string_from_dict(e, "unit").expect("Error extracting unit");
-                                        let element_name_rust = format!("{element_name} {}", name).to_case(Case::Snake);
-                                        (constant_group, create_ident(&element_name_rust), unit)
-                                    })
-                                    .collect()
-                            } else {
-                                panic!("List length not matching count")
-                            }
-                        } else {
-                            vec![]
-                        }
-                    } else {
-                        vec![]
-                    };
-                    let (fields, wrap_enum) = if direction_str == "in" {
-                        (&mut in_fields, true)
-                    } else if direction_str == "out" {
-                        (&mut out_fields, false)
-                    } else {
-                        panic!("Unknown direction: {direction_str}");
-                    };
-                    let ident = create_ident(&element_name_rust.to_case(Case::Snake));
-                    let (create_fields, field_size): (Box<[(Type, Ident)]>, _) = if let Some(ty) = transfer_type {
-                        if repeat_count > 1 && ty == TfValueType::String {
-                            (vec![(parse_quote!([char;#repeat_count]), ident)].into(), ty.bytecount(repeat_count))
-                        } else {
-                            let base_type = ty.to_token_stream();
-                            let found_types: Box<[(Type, Ident)]> = if subelements.is_empty() {
-                                vec![(parse_quote!(#base_type), ident)].into()
-                            } else {
-                                subelements
-                                    .into_iter()
-                                    .map(|(constant_group, ident, unit)| {
-                                        if let Some(constant_group) = constant_group {
-                                            let constant_type_name = Some(create_ident(&constant_group.to_case(Case::UpperCamel)));
-                                            (
-                                                if wrap_enum {
-                                                    parse_quote!(#constant_type_name)
-                                                } else {
-                                                    parse_quote!(crate::byte_converter::ParsedOrRaw<#constant_type_name,#ty>)
-                                                },
-                                                ident,
-                                            )
-                                        } else {
-                                            (parse_quote!(#base_type), ident)
-                                        }
-                                    })
-                                    .collect()
-                            };
-                            if found_types.len() == 1 && repeat_count > 1 {
-                                let (base_type, ident) = &found_types[0];
-                                (vec![(parse_quote!([#base_type;#repeat_count]), ident.clone())].into(), ty.bytecount(repeat_count))
-                            } else if found_types.len() == repeat_count {
-                                (found_types, ty.bytecount(1))
-                            } else {
-                                panic!("Count mismatch");
-                            }
-                        }
-                    } else {
-                        panic!(" ########### Unknown type: {}", transfer_type_str);
-                    };
-
-                    for (ty, ident) in create_fields.into_iter().cloned() {
-                        fields.push((
-                            Field {
-                                attrs: vec![],
-                                vis: Visibility::Public(Pub::default()),
-                                mutability: FieldMutability::None,
-                                ident: Some(ident),
-                                colon_token: None,
-                                ty,
-                            },
-                            field_size,
-                        ));
-                    }
-                }
-                //println!("Elements done");
-                let function_id = packet_idx as u8 + 1;
-                //println!("Function: {function_id}, type: {packet_type:?}: {packet_name}");
-                if packet_type == TfPacketType::Function {
-                    let (request_type, request_size): (Option<Type>, usize) = if in_fields.is_empty() {
-                        (None, 0)
-                    } else if in_fields.len() == 1 {
-                        let (first_field, length) = in_fields.remove(0);
-                        (Some(first_field.ty), length)
-                    } else {
-                        let name = format!("{packet_name}Request");
-                        let struct_name: Ident = create_ident(&name);
-                        let size = append_data_object(&mut items, &in_fields, &struct_name);
-                        (Some(parse_quote!(#struct_name)), size)
-                    };
-                    let (response_type, response_line): (Type, Option<Stmt>) = if out_fields.is_empty() {
-                        (parse_quote!(()), None)
-                    } else if out_fields.len() == 1 {
-                        let (first_field, length) = out_fields.remove(0);
-                        let length_literal: Lit = parse_quote!(#length);
-                        let method_ident = parse_quote!(from_le_byte_slice);
-                        let args = parse_quote!((&result.body()[0..#length_literal]));
-                        let read_method_call = static_method_call(&first_field.ty, method_ident, args);
-                        (first_field.ty, Some(Stmt::Expr(parse_quote!(Ok(#read_method_call)), None)))
-                    } else {
-                        let name = format!("{packet_name}Response");
-                        let struct_name: Ident = create_ident(&name);
-                        append_data_object(&mut items, &out_fields, &struct_name);
-                        (
-                            parse_quote!(#struct_name),
-                            Some(Stmt::Expr(parse_quote!(Ok(#struct_name::from_le_byte_slice(result.body()))), None)),
-                        )
-                    };
-                    let function_name = create_ident(&packet_entry.name.to_case(Case::Snake));
-                    let mut function_statements = Vec::new();
-                    if request_type.is_some() {
-                        function_statements.push(parse_quote!(let mut payload = [0; #request_size];));
-                        function_statements.push(parse_quote!(request.write_to_slice(&mut payload);))
-                    } else {
-                        function_statements.push(parse_quote!(let payload = [0; #request_size];));
-                    }
-
-                    if let Some(response_line) = response_line {
-                        function_statements.push(parse_quote!(let result = self.device.get(#function_id, &payload).await?;));
-                        function_statements.push(response_line);
-                    } else {
-                        function_statements
-                            .push(parse_quote!(self.device.set(#function_id, &payload,Some(std::time::Duration::from_secs(2))).await?;));
-                        function_statements.push(Stmt::Expr(parse_quote!(Ok(())), None));
-                    }
-                    let function_block = Block { brace_token: Default::default(), stmts: function_statements };
-                    let function_item: ImplItemFn = if let Some(request_type) = request_type {
-                        parse_quote!(
-                            #[doc = #doc_de]
-                            pub async fn #function_name(&mut self, request: #request_type) -> Result<#response_type, TinkerforgeError>
-                                #function_block
-                        )
-                    } else {
-                        parse_quote!(
-                            #[doc = #doc_de]
-                            pub async fn #function_name(&mut self) -> Result<#response_type, TinkerforgeError>
-                                #function_block
-                        )
-                    };
-
-                    device_impl.items.push(ImplItem::Fn(function_item));
-                } else if packet_type == TfPacketType::Callback {
-                    let function_name = create_ident(&format!("{}_stream", packet_entry.name.to_case(Case::Snake)));
-                    if out_fields.is_empty() {
-                        device_impl.items.push(ImplItem::Fn(parse_quote!(
-                            #[doc = #doc_de]
-                            pub async fn #function_name(&mut self) -> impl futures_core::Stream<Item = ()> {
-                                self.device
-                                    .get_callback_receiver(#function_id)
-                                    .await
-                                    .map(|_| ())
-                            }
-                        )));
-                    } else if out_fields.len() == 1 {
-                        let (first_field, length) = out_fields.remove(0);
-                        let length_literal: Lit = parse_quote!(#length);
-                        let method_ident = parse_quote!(from_le_byte_slice);
-                        let args = parse_quote!((&p.body()[0..#length_literal]));
-                        let read_method_call = static_method_call(&first_field.ty, method_ident, args);
-                        let struct_name = first_field.ty;
-                        device_impl.items.push(ImplItem::Fn(parse_quote!(
-                            #[doc = #doc_de]
-                            pub async fn #function_name(&mut self) -> impl futures_core::Stream<Item = #struct_name> {
-                                self.device
-                                    .get_callback_receiver(#function_id)
-                                    .await
-                                    .map(|p| #read_method_call)
-                            }
-                        )));
-                    } else {
-                        let struct_name: Ident = create_ident(&format!("{packet_name}Callback"));
-                        append_data_object(&mut items, &mut out_fields, &struct_name);
-                        device_impl.items.push(ImplItem::Fn(parse_quote!(
-                            #[doc = #doc_de]
-                            pub async fn #function_name(&mut self) -> impl futures_core::Stream<Item = #struct_name> {
-                                self.device
-                                    .get_callback_receiver(#function_id)
-                                    .await
-                                    .map(|p| #struct_name::from_le_byte_slice(p.body()))
-                            }
-                        )));
-                    }
-                }
+                let function = generate_packet_element_item(&mut items, function_id, &packet_entry, &package_path)?;
+                device_impl.items.push(ImplItem::Fn(function));
             }
             items.push(Item::Impl(device_impl));
+            for feature_name in tf_device.features {
+                if let Some((path, impls)) = feature_trait_impls.get(feature_name) {
+                    let mut feature_impl: ItemImpl = parse_quote!(
+                        impl #path for #device_struct_name{
+                        }
+                    );
+                    for item_fn in impls {
+                        feature_impl.items.push(ImplItem::Fn(item_fn.clone()));
+                    }
+                    items.push(Item::Impl(feature_impl));
+                } else {
+                    panic!("Feature {feature_name} not defined");
+                }
+            }
             bindings_content.push(Item::Mod(ItemMod {
                 attrs: vec![],
                 vis: Visibility::Public(Default::default()),
                 unsafety: None,
                 mod_token: Default::default(),
-                ident: create_ident(&package_name),
+                ident: package_ident,
                 content: Some((Default::default(), items)),
                 semi: None,
             }));
@@ -727,6 +556,320 @@ from generators import common",
     fs::write(dest_path, unparse(&file))?;
 
     Ok(())
+}
+
+fn generate_packet_element_item(
+    items: &mut Vec<Item>,
+    function_id: u8,
+    packet_entry: &PacketEntry,
+    base_path: &Path,
+) -> Result<ImplItemFn, PyErr> {
+    let packet_name = packet_entry.name.to_case(Case::UpperCamel);
+    let packet_type = TfPacketType::try_parse_type(packet_entry.r#type).expect("Unknown Packet type");
+    let doc_list = packet_entry.doc.downcast::<PyList>()?;
+    let doc = doc_list.get_item(1)?.downcast::<PyDict>()?;
+
+    println!("Packet: {packet_name}");
+    let doc_de = doc.get_item("de")?.map(|v| v.to_string()).unwrap_or_default();
+
+    let (mut in_fields, mut out_fields) = parse_packet_elements(&packet_entry, base_path)?;
+    Ok(if packet_type == TfPacketType::Function {
+        let (request_type, request_size): (Option<Type>, usize) = if in_fields.is_empty() {
+            (None, 0)
+        } else if in_fields.len() == 1 {
+            let (first_field, length) = in_fields.remove(0);
+            (Some(first_field.ty), length)
+        } else {
+            let name = format!("{packet_name}Request");
+            let struct_name: Ident = create_ident(&name);
+            let size = append_data_object(items, &in_fields, &struct_name);
+            (Some(parse_quote!(#base_path::#struct_name)), size)
+        };
+        let (response_type, response_line): (Type, Option<Stmt>) = if out_fields.is_empty() {
+            (parse_quote!(()), None)
+        } else if out_fields.len() == 1 {
+            let (first_field, length) = out_fields.remove(0);
+            let length_literal: Lit = parse_quote!(#length);
+            let method_ident = parse_quote!(from_le_byte_slice);
+            let args = parse_quote!((&result.body()[0..#length_literal]));
+            let read_method_call = static_method_call(&first_field.ty, method_ident, args);
+            (first_field.ty, Some(Stmt::Expr(parse_quote!(Ok(#read_method_call)), None)))
+        } else {
+            let name = format!("{packet_name}Response");
+            let struct_name: Ident = create_ident(&name);
+            append_data_object(items, &out_fields, &struct_name);
+            (
+                parse_quote!(#base_path::#struct_name),
+                Some(Stmt::Expr(parse_quote!(Ok(#base_path::#struct_name::from_le_byte_slice(result.body()))), None)),
+            )
+        };
+        let function_name = create_ident(&packet_entry.name.to_case(Case::Snake));
+        let mut function_statements = Vec::new();
+        if request_type.is_some() {
+            function_statements.push(parse_quote!(let mut payload = [0; #request_size];));
+            function_statements.push(parse_quote!(crate::byte_converter::ToBytes::write_to_slice(request,&mut payload);))
+        } else {
+            function_statements.push(parse_quote!(let payload = [0; #request_size];));
+        }
+
+        if let Some(response_line) = response_line {
+            function_statements.push(parse_quote!(let result = self.device.get(#function_id, &payload).await?;));
+            function_statements.push(response_line);
+        } else {
+            function_statements
+                .push(parse_quote!(self.device.set(#function_id, &payload,Some(std::time::Duration::from_secs(20))).await?;));
+            function_statements.push(Stmt::Expr(parse_quote!(Ok(())), None));
+        }
+        let function_block = Block { brace_token: Default::default(), stmts: function_statements };
+        if let Some(request_type) = request_type {
+            parse_quote!(
+                #[doc = #doc_de]
+                pub async fn #function_name(&mut self, request: #request_type) -> Result<#response_type, crate::error::TinkerforgeError>
+                    #function_block
+            )
+        } else {
+            parse_quote!(
+                #[doc = #doc_de]
+                pub async fn #function_name(&mut self) -> Result<#response_type, crate::error::TinkerforgeError>
+                    #function_block
+            )
+        }
+    } else if packet_type == TfPacketType::Callback {
+        let function_name = create_ident(&format!("{}_stream", packet_entry.name.to_case(Case::Snake)));
+        if out_fields.is_empty() {
+            let function_block: Block = parse_quote!({self.device
+                        .get_callback_receiver(#function_id)
+                        .await
+                        .map(|_| ())});
+            parse_quote!(
+                #[doc = #doc_de]
+                pub async fn #function_name(&mut self) -> impl futures_core::Stream<Item = ()>
+                    #function_block
+            )
+        } else if out_fields.len() == 1 {
+            let (first_field, length) = out_fields.remove(0);
+            let length_literal: Lit = parse_quote!(#length);
+            let method_ident = parse_quote!(from_le_byte_slice);
+            let args = parse_quote!((&p.body()[0..#length_literal]));
+            let read_method_call = static_method_call(&first_field.ty, method_ident, args);
+            let struct_name = first_field.ty;
+            let function_block: Block = parse_quote!(
+                {self.device
+                        .get_callback_receiver(#function_id)
+                        .await
+                        .map(|p| #read_method_call)
+                    }
+            );
+            parse_quote!(
+                #[doc = #doc_de]
+                pub async fn #function_name(&mut self) -> impl futures_core::Stream<Item = #struct_name>
+                    #function_block
+            )
+        } else {
+            let struct_name: Ident = create_ident(&format!("{packet_name}Callback"));
+            append_data_object(items, &mut out_fields, &struct_name);
+            let function_block: Block = parse_quote!({
+                       self.device
+                        .get_callback_receiver(#function_id)
+                        .await
+                        .map(|p| #struct_name::from_le_byte_slice(p.body()))}
+            );
+            parse_quote!(
+                #[doc = #doc_de]
+                pub async fn #function_name(&mut self) -> impl futures_core::Stream<Item = #base_path::#struct_name>
+                    #function_block
+            )
+        }
+    } else {
+        panic!("Invalid packet type")
+    })
+}
+
+fn parse_packet_elements(packet_entry: &PacketEntry, base_path: &Path) -> Result<(Vec<(Field, usize)>, Vec<(Field, usize)>), PyErr> {
+    let mut in_fields = Vec::new();
+    let mut out_fields = Vec::new();
+    for element_entry in &packet_entry.elements {
+        let element_tuple = element_entry.downcast::<PyTuple>()?;
+
+        let element_name = element_tuple.get_item(0)?.to_string();
+        let element_name_rust = element_name.to_case(Case::Camel);
+        let transfer_type_str = element_tuple.get_item(1)?.downcast::<PyString>().expect("Type of element is not a string").to_str()?;
+        let transfer_type = TfValueType::try_parse_type(transfer_type_str);
+        let repeat_count = usize::extract(element_tuple.get_item(2)?)?;
+        let direction_str = element_tuple.get_item(3)?.downcast::<PyString>().expect("direction of element is not a string").to_str()?;
+        let subelements = if element_tuple.len() > 4 {
+            let details = element_tuple.get_item(4)?;
+            if let Ok(params) = details.downcast::<PyDict>() {
+                let unit = string_from_dict(params, "unit").expect("Cannot parse unit of element");
+                let constant_group = string_from_dict(params, "constant_group")?;
+                vec![(constant_group, create_ident(&element_name_rust.to_case(Case::Snake)), unit)]
+            } else if let Ok(param_list) = details.downcast::<PyList>() {
+                if param_list.len() == repeat_count {
+                    param_list
+                        .into_iter()
+                        .map(|e| e.downcast::<PyDict>().expect("List entry is not a dict"))
+                        .map(|e| {
+                            let name =
+                                string_from_dict(e, "name").expect("Error extracting name").expect("No name attribute in list entry");
+                            let constant_group = string_from_dict(e, "constant_group").expect("Error extracting constant group");
+                            let unit = string_from_dict(e, "unit").expect("Error extracting unit");
+                            let element_name_rust = format!("{element_name} {}", name).to_case(Case::Snake);
+                            (constant_group, create_ident(&element_name_rust), unit)
+                        })
+                        .collect()
+                } else {
+                    panic!("List length not matching count")
+                }
+            } else {
+                vec![]
+            }
+        } else {
+            vec![]
+        };
+        let (fields, wrap_enum) = if direction_str == "in" {
+            (&mut in_fields, true)
+        } else if direction_str == "out" {
+            (&mut out_fields, false)
+        } else {
+            panic!("Unknown direction: {direction_str}");
+        };
+        let ident = create_ident(&element_name_rust.to_case(Case::Snake));
+        let (create_fields, field_size): (Box<[(Type, Ident)]>, _) = if let Some(ty) = transfer_type {
+            if repeat_count > 1 && ty == TfValueType::String {
+                (vec![(parse_quote!([char;#repeat_count]), parse_quote!(#ident))].into(), ty.bytecount(repeat_count))
+            } else {
+                let base_type = ty.to_token_stream();
+                let found_types: Box<[(Type, Ident)]> = if subelements.is_empty() {
+                    vec![(parse_quote!(#base_type), parse_quote!(#ident))].into()
+                } else {
+                    subelements
+                        .into_iter()
+                        .map(|(constant_group, ident, unit)| {
+                            if let Some(constant_group) = constant_group {
+                                let constant_type_name = Some(create_ident(&constant_group.to_case(Case::UpperCamel)));
+                                (
+                                    if wrap_enum {
+                                        parse_quote!(#base_path::#constant_type_name)
+                                    } else {
+                                        parse_quote!(crate::byte_converter::ParsedOrRaw<#base_path::#constant_type_name,#ty>)
+                                    },
+                                    parse_quote!(#ident),
+                                )
+                            } else {
+                                (parse_quote!(#base_type), parse_quote!( #ident))
+                            }
+                        })
+                        .collect()
+                };
+                if found_types.len() == 1 && repeat_count > 1 {
+                    if let [(base_type, ident)] = found_types.as_ref() {
+                        (vec![(parse_quote!([#base_type;#repeat_count]), ident.clone())].into(), ty.bytecount(repeat_count))
+                    } else {
+                        panic!("Invalid");
+                    }
+                } else if found_types.len() == repeat_count {
+                    (found_types, ty.bytecount(1))
+                } else {
+                    panic!("Count mismatch");
+                }
+            }
+        } else {
+            panic!(" ########### Unknown type: {}", transfer_type_str);
+        };
+
+        for (ty, ident) in create_fields.into_iter().cloned() {
+            fields.push((
+                Field {
+                    attrs: vec![],
+                    vis: Visibility::Public(Pub::default()),
+                    mutability: FieldMutability::None,
+                    ident: Some(ident),
+                    colon_token: None,
+                    ty,
+                },
+                field_size,
+            ));
+        }
+    }
+    Ok((in_fields, out_fields))
+}
+
+fn process_constant_group(items: &mut Vec<Item>, group: ConstantGroupEntry) {
+    let camel_name = group.name.to_case(Case::UpperCamel);
+    println!("Constant group: {}", group.name);
+    let ty = if let Some(ty) = TfValueType::try_parse_type(group.r#type) {
+        ty
+    } else {
+        return;
+    };
+    let enum_name_ident = create_ident(&camel_name);
+    let mut variants: Punctuated<Variant, Comma> = Default::default();
+    let mut encode_arms = vec![];
+    let mut parse_arms = vec![];
+    for (name, value) in group.constants {
+        let variant_ident = create_ident(&name.to_case(Case::UpperCamel));
+        variants.push(parse_quote!(#variant_ident));
+        let value = ty.parse_token_value(value).expect("Cannot parse python value {value:?}");
+        encode_arms.push(parse_quote!(#enum_name_ident::#variant_ident =>#value));
+        parse_arms.push(parse_quote!(#value => Ok(#enum_name_ident::#variant_ident)))
+    }
+    items.push(parse_quote!(
+        #[derive(Copy,Clone,Eq,PartialEq,Debug)]
+        pub enum #enum_name_ident{
+            #variants
+        }
+    ));
+    let encode_match = ExprMatch {
+        attrs: vec![],
+        match_token: Default::default(),
+        expr: Box::new(parse_quote!(self)),
+        brace_token: Default::default(),
+        arms: encode_arms,
+    };
+
+    parse_arms.push(parse_quote!(_ => Err(())));
+    let parse_match = ExprMatch {
+        attrs: vec![],
+        match_token: Default::default(),
+        expr: Box::new(parse_quote!(self)),
+        brace_token: Default::default(),
+        arms: parse_arms,
+    };
+
+    items.push(Item::Impl(parse_quote!(
+        impl Into<#ty> for #enum_name_ident {
+            fn into(self) -> #ty {
+                #encode_match
+            }
+        }
+    )));
+    items.push(parse_quote!(
+        impl crate::byte_converter::ToBytes for #enum_name_ident {
+            fn write_to_slice(self,target: &mut [u8]){
+                <#enum_name_ident as Into<#ty>>::into(self).write_to_slice(target);
+            }
+        }
+    ));
+    let type_size = ty.bytecount(1);
+    items.push(parse_quote!(
+        impl crate::byte_converter::FromByteSlice for #enum_name_ident {
+            fn from_le_byte_slice(bytes: &[u8])->Self{
+                #ty::from_le_byte_slice(bytes).try_into().expect("unsupported enum value")
+            }
+            fn bytes_expected() -> usize{
+                #type_size
+            }
+        }
+    ));
+
+    items.push(Item::Impl(parse_quote!(
+        impl std::convert::TryInto<#enum_name_ident> for #ty {
+            type Error = ();
+            fn try_into(self) -> Result<#enum_name_ident, Self::Error> {
+                #parse_match
+            }
+        }
+    )));
 }
 
 fn create_ident(string: &str) -> Ident {
@@ -778,7 +921,7 @@ fn append_data_object(items: &mut Vec<Item>, fields: &[(Field, usize)], struct_n
     reader_statements.push(Stmt::Expr(parse_quote!(Self{#initialization_fields}), None));
     let read_fields = Block { brace_token: Default::default(), stmts: reader_statements };
     items.push(parse_quote!(
-       impl FromByteSlice for #struct_name {
+       impl crate::byte_converter::FromByteSlice for #struct_name {
        fn from_le_byte_slice(bytes: &[u8]) -> Self
                #read_fields
        fn bytes_expected() -> usize {
@@ -787,7 +930,7 @@ fn append_data_object(items: &mut Vec<Item>, fields: &[(Field, usize)], struct_n
     }));
     let write_fields = Block { brace_token: Default::default(), stmts: writer_statements };
     items.push(parse_quote!(
-         impl ToBytes for #struct_name {
+         impl crate::byte_converter::ToBytes for #struct_name {
             fn write_to_slice(self, target: &mut [u8])
                 #write_fields
         }
@@ -823,8 +966,11 @@ fn string_from_dict<'a>(dict: &'a PyDict, key: &str) -> PyResult<Option<&'a str>
         if let Ok(string_value) = entry.downcast::<PyString>() {
             Ok(Some(string_value.to_str()?))
         } else {
-            println!("Invalid String value: {entry:?}");
-            Ok(None)
+            if entry.is_none() {
+                Ok(None)
+            } else {
+                panic!("Invalid String value: {entry:?}")
+            }
         }
     } else {
         Ok(None)

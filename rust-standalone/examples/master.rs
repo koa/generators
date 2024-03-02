@@ -1,11 +1,13 @@
 use tokio_stream::StreamExt;
 
-use tinkerforge_async::error::TinkerforgeError;
-use tinkerforge_async::ip_connection::async_io::AsyncIpConnection;
-use tinkerforge_async::ip_connection::EnumerationType;
-use tinkerforge_async::lcd_128_x_64::{Lcd128X64Bricklet, SetTouchPositionCallbackConfigurationRequest};
-use tinkerforge_async::master::MasterBrick;
-use tinkerforge_async::DeviceIdentifier;
+use tinkerforge_async::{
+    common::brick_get_identity::BrickGetIdentity,
+    error::TinkerforgeError,
+    ip_connection::{async_io::AsyncIpConnection, EnumerationType},
+    lcd_128_x_64::{Lcd128X64Bricklet, SetTouchPositionCallbackConfigurationRequest},
+    master::MasterBrick,
+    DeviceIdentifier,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), TinkerforgeError> {
@@ -22,6 +24,10 @@ async fn main() -> Result<(), TinkerforgeError> {
                             let connection = connection.clone();
                             tokio::spawn(async move {
                                 let mut master = MasterBrick::new(uid, connection);
+                                if let Ok(id) = master.get_identity().await {
+                                    println!("ID: {id:?}");
+                                }
+
                                 if let Ok(status) = master.get_ethernet_status().await {
                                     println!("Status: {status:?}");
                                 }
