@@ -75,6 +75,9 @@ impl Device {
             device_display_name,
         }
     }
+    pub(crate) fn uid(&self) -> Uid {
+        self.internal_uid
+    }
 
     pub(crate) async fn set(
         &mut self,

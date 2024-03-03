@@ -292,7 +292,6 @@ from generators import common",
     let mut device_encode_arms = Vec::new();
     let mut device_parse_arms = Vec::new();
     let mut device_name_arms = Vec::new();
-    let mut last_device_id = None;
 
     let found_modules = dir
         .into_iter()
@@ -314,7 +313,7 @@ from generators import common",
         .collect::<HashMap<_, _>>();
     let mut common_items = Vec::new();
     let mut features = HashMap::<_, (Vec<_>, Vec<_>)>::new();
-    for (module_name, module) in found_modules.iter() {
+    for (_, module) in found_modules.iter() {
         if let Ok(com_struct) = module.getattr("common_constant_groups") {
             for common_constant_group_entry_dict in
                 com_struct.iter().expect("common_constant_groups is not a list").map(|e| e.expect("cannot access list entry"))
@@ -330,7 +329,7 @@ from generators import common",
         if let Ok(com_packets) = module.getattr("common_packets") {
             for com_packet in com_packets.iter().expect("Packets are no list").map(|p| p.expect("Cannot decode packet")) {
                 let feature = String::extract(com_packet.get_item("feature").expect("Missing feature")).expect("Feature is not a string");
-                let mut feature_data = features.entry(feature.into_boxed_str()).or_default();
+                let feature_data = features.entry(feature.into_boxed_str()).or_default();
                 if com_packet.get_item("is_virtual").ok().map(bool::extract).and_then(<PyResult<bool>>::ok).unwrap_or(false) {
                     continue;
                 }
@@ -409,13 +408,9 @@ from generators import common",
         if let Ok(com_struct) = module.getattr("com") {
             let tf_device = TfDevice::extract(com_struct)?;
             let raw_package_name = tf_device.name;
-            if Some(tf_device.device_identifier) == last_device_id {
-                //continue;
-            }
-            last_device_id = Some(tf_device.device_identifier);
             println!("Python file: {:?}: {raw_package_name}", module_name);
 
-            if raw_package_name == "RS485" || raw_package_name == "Unknown" {
+            if raw_package_name == "Unknown" {
                 // probleme mit doppelten einträgen in der config
                 continue;
             }
@@ -459,7 +454,7 @@ from generators import common",
                     device: crate::device::Device,
                 }
             ));
-            let api_version = tf_device.api_version;
+            //let api_version = tf_device.api_version;
             /*
             let av1 = api_version[0];
             let av2 = api_version[1];
@@ -471,6 +466,9 @@ from generators import common",
                             device: crate::device::Device::new(uid,connection,#raw_package_name)
                         }
                     }
+                    pub fn uid(&self)->crate::base58::Uid{
+                        self.device.uid()
+                    }
                 }
             );
             for group in tf_device.constant_groups {
@@ -478,6 +476,9 @@ from generators import common",
             }
             let mut function_id: u8 = 0;
             for packet_entry_any in tf_device.packets.iter() {
+                if packet_entry_any.get_item("openhab_doc").ok().map(bool::extract).and_then(<PyResult<bool>>::ok).unwrap_or(false) {
+                    continue;
+                }
                 let packet_entry = PacketEntry::extract(packet_entry_any).expect("Cannot unpack packet entry");
                 function_id = if let Some(fid) =
                     packet_entry_any.get_item("function_id").ok().map(|fid| fid.downcast::<PyInt>().expect("Function_ID is not a number"))
