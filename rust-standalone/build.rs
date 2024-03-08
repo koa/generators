@@ -250,11 +250,11 @@ impl TfPacketType {
 
 fn parse_python(py: Python) -> Result<(), PyErr> {
     let buf = current_dir()?;
-    let root_dir = buf.parent();
+    let root_dir = find_generators(buf.parent());
     let path = root_dir.map(|p| p.join("configs")).unwrap();
+    println!("Reading from directory {path:?}");
     let dir = path.read_dir().expect("Cannot read directory");
-    PyModule::from_code(
-        py,
+    let initializer_code = format!(
         "import sys
 
 if sys.hexversion < 0x3040000:
@@ -268,7 +268,7 @@ import importlib.util
 import importlib.machinery
 
 def create_generators_module():
-    generators_dir = os.path.split(os.path.dirname(os.path.realpath(__file__)))[0]
+    generators_dir = os.path.split(os.path.realpath({path:?}))[0]
 
     if sys.hexversion < 0x3050000:
         generators_module = importlib.machinery.SourceFileLoader('generators', os.path.join(generators_dir, '__init__.py')).load_module()
@@ -283,10 +283,9 @@ def create_generators_module():
 if 'generators' not in sys.modules:
     create_generators_module()
 
-from generators import common",
-        "generators.rs",
-        "initializer",
-    )?;
+from generators import common"
+    );
+    PyModule::from_code(py, &initializer_code, "generators.rs", "initializer")?;
     let mut bindings_content = Vec::new();
     let mut device_variants: Punctuated<Variant, Comma> = Default::default();
     let mut device_encode_arms = Vec::new();
@@ -557,6 +556,18 @@ from generators import common",
     fs::write(dest_path, unparse(&file))?;
 
     Ok(())
+}
+
+fn find_generators(path: Option<&path::Path>) -> Option<&path::Path> {
+    if let Some(p) = path {
+        if p.ends_with("generators") {
+            Some(p)
+        } else {
+            find_generators(p.parent())
+        }
+    } else {
+        None
+    }
 }
 
 fn generate_packet_element_item(

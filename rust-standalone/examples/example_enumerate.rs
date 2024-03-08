@@ -20,9 +20,9 @@ fn print_enumerate_response(response: &EnumerateResponse) {
 
     println!("Connected UID:     {}", response.connected_uid);
     println!("Position:          {}", response.position);
-    println!("Hardware Version:  {}.{}.{}", response.hardware_version[0], response.hardware_version[1], response.hardware_version[2]);
-    println!("Firmware Version:  {}.{}.{}", response.firmware_version[0], response.firmware_version[1], response.firmware_version[2]);
-    println!("Device Identifier: {}", response.device_identifier);
+    println!("Hardware Version:  {}", response.hardware_version);
+    println!("Firmware Version:  {}", response.firmware_version);
+    println!("Device Identifier: {:?}", response.device_identifier);
     println!("");
 }
 
