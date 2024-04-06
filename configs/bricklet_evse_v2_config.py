@@ -138,9 +138,11 @@ com['constant_groups'].append({
 com['constant_groups'].append({
 'name': 'Shutdown Input',
 'type': 'uint8',
-'constants': [('Ignored', 0),
+'constants': [('Ignored', 0), # <- WARP2 default
               ('Shutdown On Open', 1),
-              ('Shutdown On Close', 2)]
+              ('Shutdown On Close', 2),
+              ('4200 Watt On Open', 3),
+              ('4200 Watt On Close', 4)] # <- WARP3 default
 })
 
 com['constant_groups'].append({
@@ -888,7 +890,10 @@ com['packets'].append({
              ('Temperature', 'int16', 1, 'out'),
              ('Phases Current', 'uint8', 1, 'out'),  # Always three-phase for EVSE V2
              ('Phases Requested', 'uint8', 1, 'out'),
-             ('Phases Status', 'uint8', 1, 'out'),
+             ('Phases State', 'uint8', 1, 'out'),
+             ('Phases Info', 'uint8', 1, 'out'),
+             ('Phase Auto Switch Enabled', 'bool', 1, 'out'),
+             ('Phases Connected', 'uint8', 1, 'out'), # 1 or 3, Ignored in EVSE V2
 ],
 'since_firmware': [1, 0, 0],
 'doc': ['bf', {
@@ -1047,9 +1052,98 @@ com['packets'].append({
 'name': 'Get Phase Control',
 'elements': [('Phases Current', 'uint8', 1, 'out'),  # Always three-phase EVSE V2
              ('Phases Requested', 'uint8', 1, 'out'),
-             ('Phases Status', 'uint8', 1, 'out')],
+             ('Phases State', 'uint8', 1, 'out'),
+             ('Phases Info', 'uint8', 1, 'out')],  # 0 = normal, 1 = 1-phase forced by auto-switch
 'since_firmware': [1, 0, 0],
 'doc': ['bf', {
+'en':
+"""
+TODO
+""",
+'de':
+"""
+TODO
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'function',
+'name': 'Set Phase Auto Switch',
+'elements': [('Phase Auto Switch Enabled', 'bool', 1, 'in')], # Ignored in EVSE V2
+'since_firmware': [1, 0, 0],
+'doc': ['bf', {
+'en':
+"""
+TODO
+""",
+'de':
+"""
+TODO
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'function',
+'name': 'Get Phase Auto Switch',
+'elements': [('Phase Auto Switch Enabled', 'bool', 1, 'out')], # Always false in EVSE V2
+'since_firmware': [1, 0, 0],
+'doc': ['bf', {
+'en':
+"""
+TODO
+""",
+'de':
+"""
+TODO
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'function',
+'name': 'Set Phases Connected',
+'elements': [('Phases Connected', 'uint8', 1, 'in')], # 1 or 3, Ignored in EVSE V2
+'since_firmware': [1, 0, 0],
+'doc': ['bf', {
+'en':
+"""
+TODO
+""",
+'de':
+"""
+TODO
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'function',
+'name': 'Get Phases Connected',
+'elements': [('Phases Connected', 'uint8', 1, 'out')], # 1 or 3, Ignored in EVSE V2
+'since_firmware': [1, 0, 0],
+'doc': ['bf', {
+'en':
+"""
+TODO
+""",
+'de':
+"""
+TODO
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'callback',
+'name': 'Energy Meter Values',
+'elements': [('Power', 'float', 1, 'out'),            # W
+             ('Current', 'float', 3, 'out'),
+             ('Phases Active', 'bool', 3, 'out'),
+             ('Phases Connected', 'bool', 3, 'out')],
+'since_firmware': [1, 0, 0],
+'doc': ['c', {
 'en':
 """
 TODO

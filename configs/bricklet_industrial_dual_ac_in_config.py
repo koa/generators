@@ -21,7 +21,7 @@ com = {
         'de': '2 Eingänge die AC-Spannungen von bis zu 230V detektieren können'
     },
     'released': True,
-    'documented': False,
+    'documented': True,
     'discontinued': False,
     'features': [
         'device',
@@ -58,11 +58,11 @@ com['packets'].append({
 'doc': ['bf', {
 'en':
 """
-Returns the input values as bools, *true* refers to "AC voltage detected" and *false* refers to no AC "voltage detected".
+Returns the input values as bools, *true* refers to "AC voltage detected" and *false* refers to no "AC voltage detected".
 """,
 'de':
 """
-Gibt die Eingangswerte als Bools zurück, *true* bedeutet das eine AC-Spannung anliegt und *false* bedeutet das keine AC-Spannung anliegt.
+Gibt die Eingangswerte als Bools zurück, *true* bedeutet, dass eine AC-Spannung anliegt und *false* bedeutet, dass keine AC-Spannung anliegt.
 """
 }]
 })

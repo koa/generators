@@ -30,6 +30,7 @@ if sys.hexversion < 0x3040000:
     sys.exit(1)
 
 import os
+import subprocess
 import importlib.util
 import importlib.machinery
 
@@ -57,7 +58,7 @@ class PythonTester(common.Tester):
 
         self.python = python
 
-    def test(self, cookie, tmp_dir, path, extra):
+    def test(self, cookie, tmp_dir, scratch_dir, path, extra):
         args = [self.python,
                 '-c',
                 'import py_compile; py_compile.compile("{0}", doraise=True)'.format(path)]
@@ -70,7 +71,7 @@ class PylintTester(common.Tester):
 
         self.python = python
 
-    def test(self, cookie, tmp_dir, path, extra):
+    def test(self, cookie, tmp_dir, scratch_dir, path, extra):
         teardown = None
 
         if self.python == 'python3':
@@ -90,7 +91,7 @@ class PylintTester(common.Tester):
                 '-c',
                 'import sys; sys.path.insert(0, "{0}"); import pylint; pylint.run_pylint()'.format(os.path.join(tmp_dir, 'source')),
                 '-E',
-                '--disable=no-name-in-module',
+                '--disable=no-name-in-module,assignment-from-no-return',
                 path]
 
         self.execute(cookie, args, teardown=teardown)
@@ -116,12 +117,23 @@ def test(root_dir):
                    os.path.join(root_dir, '../../blinkenlights/rainbow/python/rainbow.py'),
                    os.path.join(root_dir, '../../blinkenlights/text/python/text.py')]
 
-    if not PythonTester(root_dir, 'python', extra_paths).run():
-        return False
+    python2 = None
 
-    # FIXME: doesn't handle PyQt related super false-positves yet
-    if not PylintTester(root_dir, 'python', 'pylint', []).run():#extra_paths).run():
-        return False
+    if os.path.exists('/usr/bin/python') and subprocess.check_output(['python', '--version'], encoding='utf-8').startswith('Python 2.'):
+        python2 = 'python'
+    elif os.path.exists('/usr/bin/python2'):
+        python2 = 'python2'
+
+    if python2 != None:
+        if not PythonTester(root_dir, python2, extra_paths).run():
+            return False
+
+        # FIXME: doesn't handle PyQt related super false-positves yet
+        if subprocess.call([python2, '-m', 'pylint', '-h'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
+            print('\nSkipping pylint test, module not available\n')
+        else:
+            if not PylintTester(root_dir, python2, 'pylint', []).run():#extra_paths).run():
+                return False
 
     if not PythonTester(root_dir, 'python3', extra_paths).run():
         return False

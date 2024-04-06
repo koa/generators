@@ -56,25 +56,21 @@ class CSharpExamplesTester(common.Tester):
     def __init__(self, root_dir, extra_paths):
         common.Tester.__init__(self, 'csharp', '.cs', root_dir, extra_paths=extra_paths)
 
-    def test(self, cookie, tmp_dir, path, extra):
+    def test(self, cookie, tmp_dir, scratch_dir, path, extra):
         if extra:
             shutil.copy(path, tmp_dir)
             path = os.path.join(tmp_dir, os.path.split(path)[-1])
 
-        output = path[:-3] + '.exe'
+        shutil.copy(os.path.join(self.root_dir, 'Example.csproj'), scratch_dir)
+        shutil.copy(os.path.join(tmp_dir, 'Tinkerforge.dll'), scratch_dir)
+        shutil.copy(path, scratch_dir)
 
-        args = ['mcs',
-                '/warn:4',
-                '/optimize',
-                '/target:exe',
-                '/sdk:2',
-                '/out:' + output,
-                '/reference:System.Drawing.dll',
-                '/reference:System.Windows.Forms.dll',
-                '/reference:' + os.path.join(tmp_dir, 'Tinkerforge.dll'),
-                path]
+        args = ['dotnet',
+                'build',
+                '-c',
+                'Release']
 
-        self.execute(cookie, args)
+        self.execute(cookie, args, cwd=scratch_dir)
 
 def test(root_dir):
     extra_paths = [os.path.join(root_dir, '../../weather-station/button_control/csharp/WeatherStationButton.cs'),
