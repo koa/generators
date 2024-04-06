@@ -114,7 +114,6 @@ class RustZipGenerator(rust_common.RustGeneratorTrait, common.ZipGenerator):
             'device.rs',
             'ip_connection.rs',
             'low_level_traits.rs',
-            'error.rs',
         ]
         bindings_files = ['mod.rs']
         bindings_source_files = ['lib.rs', 'byte_converter.rs']

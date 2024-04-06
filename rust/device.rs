@@ -1,28 +1,19 @@
 //! Generic device functionality which is used by all bricks and bricklets.
 
-use std::time::Duration;
-
-use futures_core::Stream;
-#[cfg(feature = "prometheus")]
-use lazy_static::lazy_static;
-#[cfg(feature = "prometheus")]
-use prometheus::{HistogramVec, register_histogram_vec};
-
 use crate::{
-    base58::Uid,
-    error::TinkerforgeError,
-    ip_connection::async_io::{AsyncIpConnection, PacketData},
+    base58::*,
+    byte_converter::FromByteSlice,
+    converting_callback_receiver::ConvertingCallbackReceiver,
+    converting_receiver::{BrickletError, BrickletRecvTimeoutError, ConvertingReceiver},
+    ip_connection::{GetRequestSender, Request, SocketThreadRequest},
+    low_level_traits::*,
+};
+use std::sync::{
+    mpsc::{channel, Sender},
+    Arc, Mutex,
 };
 
-#[cfg(feature = "prometheus")]
-lazy_static! {
-    static ref REQUEST_TIMING: HistogramVec = register_histogram_vec!(
-        "tinkerforge_request",
-        "The Tinkerforge response times latencies in seconds.",
-        &["device_type", "function_id", "method"]
-    )
-    .unwrap();
-}
+use std::error::Error;
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub(crate) enum ResponseExpectedFlag {
@@ -42,16 +33,13 @@ impl From<bool> for ResponseExpectedFlag {
     }
 }
 
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
-
 #[derive(Clone)]
 pub(crate) struct Device {
     pub api_version: [u8; 3],
     pub response_expected: [ResponseExpectedFlag; 256],
-    pub internal_uid: Uid,
-    pub connection: AsyncIpConnection,
-    #[cfg(feature = "prometheus")]
-    device_display_name: &'static str,
+    pub internal_uid: u32,
+    pub req_tx: Sender<SocketThreadRequest>,
+    pub high_level_locks: Vec<Arc<Mutex<()>>>,
 }
 
 /// This error is returned if the response expected status was queried for an unknown function.
@@ -87,19 +75,17 @@ impl std::fmt::Display for SetResponseExpectedError {
 }
 
 impl Device {
-    pub(crate) fn new(
-        api_version: [u8; 3],
-        internal_uid: Uid,
-        connection: AsyncIpConnection,
-        #[allow(unused)] device_display_name: &'static str,
-    ) -> Device {
-        Device {
-            api_version,
-            internal_uid,
-            response_expected: [ResponseExpectedFlag::InvalidFunctionId; 256],
-            connection,
-            #[cfg(feature = "prometheus")]
-            device_display_name,
+    pub(crate) fn new<T: GetRequestSender>(api_version: [u8; 3], uid: &str, req_sender: T, high_level_function_count: u8) -> Device {
+        match uid.base58_to_u32() {
+            Ok(internal_uid) => Device {
+                api_version,
+                internal_uid: internal_uid,
+                req_tx: req_sender.get_rs().socket_thread_tx.clone(),
+                response_expected: [ResponseExpectedFlag::InvalidFunctionId; 256],
+                high_level_locks: vec![Arc::new(Mutex::new(())); high_level_function_count as usize],
+            },
+            //FIXME: (breaking change) Don't panic here, return a Result instead.
+            Err(e) => panic!("UID {} could not be parsed: {}", uid, e.description())
         }
     }
 
@@ -131,27 +117,148 @@ impl Device {
         }
     }
 
-    pub(crate) async fn set(&mut self, function_id: u8, payload: &[u8]) -> Result<Option<PacketData>, TinkerforgeError> {
-        #[cfg(feature = "prometheus")]
-            let timer = REQUEST_TIMING.with_label_values(&[self.device_display_name, function_id.to_string().as_str(), "set"]).start_timer();
-        let timeout =
-            if self.response_expected[function_id as usize] == ResponseExpectedFlag::False { None } else { Some(DEFAULT_TIMEOUT) };
-        let result = self.connection.set(self.internal_uid, function_id, payload, timeout).await;
-        #[cfg(feature = "prometheus")]
-        drop(timer);
-        result
+    pub(crate) fn set<T: FromByteSlice>(&self, function_id: u8, payload: Vec<u8>) -> ConvertingReceiver<T> {
+        let (sent_tx, sent_rx) = channel();
+        if self.response_expected[function_id as usize] == ResponseExpectedFlag::False {
+            let (tx, rx) = channel();
+            self.req_tx
+                .send(SocketThreadRequest::Request(
+                    Request::Set { uid: self.internal_uid, function_id, payload, response_sender: None },
+                    sent_tx,
+                ))
+                .expect("The socket thread queue was disconnected from the ip connection. This is a bug in the rust bindings.");
+            let timeout = sent_rx.recv().expect("The sent queue was dropped. This is a bug in the rust bindings.");
+            let _ = tx.send(Err(BrickletError::SuccessButResponseExpectedIsDisabled));
+            ConvertingReceiver::new(rx, timeout)
+        } else {
+            let (tx, rx) = channel();
+            self.req_tx
+                .send(SocketThreadRequest::Request(
+                    Request::Set { uid: self.internal_uid, function_id, payload, response_sender: Some(tx) },
+                    sent_tx,
+                ))
+                .expect("The socket thread queue was disconnected from the ip connection. This is a bug in the rust bindings.");
+            let timeout = sent_rx.recv().expect("The sent queue was dropped. This is a bug in the rust bindings.");
+            ConvertingReceiver::new(rx, timeout)
+        }
     }
 
-    pub(crate) async fn get_callback_receiver(&mut self, function_id: u8) -> impl Stream<Item=PacketData> {
-        self.connection.callback_stream(self.internal_uid, function_id).await
+    pub(crate) fn get_callback_receiver<T: FromByteSlice>(&self, function_id: u8) -> ConvertingCallbackReceiver<T> {
+        let (tx, rx) = channel();
+        let (sent_tx, sent_rx) = channel();
+        self.req_tx
+            .send(SocketThreadRequest::Request(
+                Request::RegisterCallback { uid: self.internal_uid, function_id, response_sender: tx },
+                sent_tx,
+            ))
+            .expect("The socket thread queue was disconnected from the ip connection. This is a bug in the rust bindings.");
+        sent_rx.recv().expect("The sent queue was dropped. This is a bug in the rust bindings.");
+        ConvertingCallbackReceiver::new(rx)
     }
 
-    pub(crate) async fn get(&mut self, function_id: u8, payload: &[u8]) -> Result<PacketData, TinkerforgeError> {
-        #[cfg(feature = "prometheus")]
-            let timer = REQUEST_TIMING.with_label_values(&[self.device_display_name, function_id.to_string().as_str(), "get"]).start_timer();
-        let result = self.connection.get(self.internal_uid, function_id, payload, DEFAULT_TIMEOUT).await;
-        #[cfg(feature = "prometheus")]
-        drop(timer);
-        result
+    pub(crate) fn get<T: FromByteSlice>(&self, function_id: u8, payload: Vec<u8>) -> ConvertingReceiver<T> {
+        let (tx, rx) = channel();
+        let (sent_tx, sent_rx) = channel();
+        self.req_tx
+            .send(SocketThreadRequest::Request(Request::Get { uid: self.internal_uid, function_id, payload, response_sender: tx }, sent_tx))
+            .expect("The socket thread queue was disconnected from the ip connection. This is a bug in the rust bindings.");
+        let timeout = sent_rx.recv().expect("The sent queue was dropped. This is a bug in the rust bindings.");
+        ConvertingReceiver::new(rx, timeout)
+    }
+
+    pub(crate) fn set_high_level<
+        PayloadT,
+        OutputT,
+        LlwT: LowLevelWrite<OutputT>,
+        ClosureT: FnMut(usize, usize, &[PayloadT]) -> Result<LlwT, BrickletRecvTimeoutError>,
+    >(
+        &self,
+        high_level_function_idx: u8,
+        payload: &[PayloadT],
+        max_payload_len: usize,
+        chunk_len: usize,
+        low_level_closure: &mut ClosureT,
+    ) -> Result<(usize, OutputT), BrickletRecvTimeoutError> {
+        if payload.len() > max_payload_len {
+            return Err(BrickletRecvTimeoutError::InvalidParameter);
+        }
+
+        let length = payload.len();
+
+        let mut chunk_offset = 0;
+        {
+            let _lock_guard = self.high_level_locks[high_level_function_idx as usize].lock().unwrap();
+            if length == 0 {
+                match low_level_closure(length, chunk_offset, &[]) {
+                    Ok(low_level_result) => return Ok((low_level_result.ll_message_written(), low_level_result.get_result())),
+                    Err(e) => return Err(e),
+                }
+            }
+            let mut written_sum = 0;
+            loop {
+                match low_level_closure(length, chunk_offset, &payload[chunk_offset..std::cmp::min(chunk_offset + chunk_len, length)]) {
+                    Ok(low_level_result) => {
+                        let written = low_level_result.ll_message_written();
+                        let output = low_level_result.get_result();
+                        written_sum += written;
+                        if written < chunk_len {
+                            return Ok((written_sum, output));
+                        }
+                        chunk_offset += chunk_len;
+                        if chunk_offset >= length {
+                            return Ok((written_sum, output));
+                        }
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+    }
+
+    pub(crate) fn get_high_level<
+        PayloadT: Default + Clone + Copy,
+        OutputT,
+        LlrT: LowLevelRead<PayloadT, OutputT>,
+        ClosureT: FnMut() -> Result<LlrT, BrickletRecvTimeoutError>,
+    >(
+        &self,
+        high_level_function_idx: u8,
+        low_level_closure: &mut ClosureT,
+    ) -> Result<(Vec<PayloadT>, OutputT), BrickletRecvTimeoutError> {
+        let mut chunk_offset = 0;
+        {
+            let _lock_guard = self.high_level_locks[high_level_function_idx as usize].lock().unwrap();
+            let mut result = low_level_closure()?;
+            let mut out_of_sync = result.ll_message_chunk_offset() != 0;
+            let message_length = result.ll_message_length();
+
+            if !out_of_sync {
+                let mut buf = vec![PayloadT::default(); message_length];
+                let first_read_length = std::cmp::min(result.ll_message_chunk_data().len(), message_length - chunk_offset);
+                buf[chunk_offset..chunk_offset + first_read_length].copy_from_slice(&result.ll_message_chunk_data()[0..first_read_length]);
+                chunk_offset += first_read_length;
+                while chunk_offset < message_length {
+                    result = low_level_closure()?;
+                    out_of_sync = result.ll_message_chunk_offset() != chunk_offset || result.ll_message_length() != message_length;
+                    if out_of_sync {
+                        break;
+                    }
+
+                    let read_length = std::cmp::min(result.ll_message_chunk_data().len(), message_length - chunk_offset);
+                    buf[chunk_offset..chunk_offset + read_length].copy_from_slice(&result.ll_message_chunk_data()[0..read_length]);
+                    chunk_offset += read_length;
+                }
+                if !out_of_sync {
+                    return Ok((buf, result.get_result()));
+                }
+            }
+
+            assert!(out_of_sync);
+            while chunk_offset + result.ll_message_chunk_data().len() < message_length {
+		chunk_offset += result.ll_message_chunk_data().len();
+                result = low_level_closure()?;
+            }
+            Err(BrickletRecvTimeoutError::MalformedPacket)
+        }
     }
 }

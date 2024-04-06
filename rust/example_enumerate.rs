@@ -1,14 +1,5 @@
-use std::error::Error;
-use std::time::Duration;
-
-use tokio::pin;
-use tokio_stream::StreamExt;
-
-use tinkerforge_async::ip_connection::{
-    async_io::AsyncIpConnection,
-    EnumerateResponse,
-    EnumerationType,
-};
+use std::{error::Error, io, thread};
+use tinkerforge::ip_connection::{EnumerateResponse, EnumerationType, IpConnection};
 
 const HOST: &str = "localhost";
 const PORT: u16 = 4223;
@@ -30,17 +21,28 @@ fn print_enumerate_response(response: &EnumerateResponse) {
     println!("");
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let mut ipcon = AsyncIpConnection::new((HOST, PORT)).await?; // Create IP connection and connect to brickd
+fn main() -> Result<(), Box<dyn Error>> {
+    let ipcon = IpConnection::new(); // Create IP connection
 
-    // Enumerate
-    let stream = ipcon.enumerate().await?
-        .timeout(Duration::from_secs(2));
+    ipcon.connect((HOST, PORT)).recv()??; // Connect to brickd
 
-    pin!(stream);
-    while let Some(Ok(paket)) = stream.next().await {
-        print_enumerate_response(&paket);
-    }
+    let receiver = ipcon.get_enumerate_callback_receiver();
+
+    // Spawn thread to react to enumerate callback messages.
+    // This thread must not be terminated or joined,
+    // as it will end when the IP connection (and the receiver's sender) is dropped.
+    thread::spawn(move || {
+        for response in receiver {
+            print_enumerate_response(&response);
+        }
+    });
+
+    // Trigger Enumerate
+    ipcon.enumerate();
+
+    println!("Press enter to exit.");
+    let mut _input = String::new();
+    io::stdin().read_line(&mut _input)?;
+    ipcon.disconnect();
     Ok(())
 }
