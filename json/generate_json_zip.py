@@ -57,13 +57,18 @@ class JSONZipGenerator(JSONGeneratorTrait, common.ZipGenerator):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.tmp_dir        = self.get_zip_dir()
+        self.tmp_dir = self.get_zip_dir()
         self.tmp_source_dir = os.path.join(self.tmp_dir, 'source')
+        self.tmp_rust_dir = os.path.join(self.tmp_dir, 'rust')
+        self.tmp_rust_bindings_dir = os.path.join(self.tmp_dir, 'rust', 'bindings')
+        self.tmp_rust_src_dir = os.path.join(self.tmp_dir, 'rust', 'src')
 
     def prepare(self):
         super().prepare()
 
         os.makedirs(self.tmp_source_dir)
+        os.makedirs(self.tmp_rust_bindings_dir)
+        os.makedirs(self.tmp_rust_src_dir)
 
     def generate(self, device):
         pass
@@ -74,6 +79,7 @@ class JSONZipGenerator(JSONGeneratorTrait, common.ZipGenerator):
         # Copy bindings and readme
         for filename in self.get_released_files():
             shutil.copy(os.path.join(self.get_bindings_dir(), filename), self.tmp_source_dir)
+            shutil.copy(os.path.join(self.get_bindings_dir(), filename), self.tmp_rust_bindings_dir)
 
         if self.get_config_name().space == 'Tinkerforge':
             shutil.copy(os.path.join(root_dir, 'changelog.txt'),                self.tmp_dir)
@@ -86,8 +92,34 @@ class JSONZipGenerator(JSONGeneratorTrait, common.ZipGenerator):
         # Make zip
         self.create_zip_file(self.tmp_dir)
 
+        # Make Cargo.toml
+        version = self.get_changelog_version()
+        common.specialize_template(os.path.join(root_dir,'rust', 'Cargo.toml-template'),
+                                   os.path.join(self.tmp_rust_dir, 'Cargo.toml'),
+                                   {'{{VERSION}}': '.'.join(version)})
+        shutil.copy(os.path.join(root_dir, 'rust', 'readme.md'), self.tmp_rust_dir)
+        shutil.copy(os.path.join(root_dir, 'rust', 'rustfmt.toml'), self.tmp_rust_dir)
+        shutil.copy(os.path.join(root_dir, 'rust', 'build.rs'), self.tmp_rust_dir)
+        shutil.copy(os.path.join(root_dir, 'rust', 'src', 'base58.rs'), self.tmp_rust_src_dir)
+        shutil.copy(os.path.join(root_dir, 'rust', 'src', 'bindings.rs'), self.tmp_rust_src_dir)
+        shutil.copy(os.path.join(root_dir, 'rust', 'src', 'byte_converter.rs'), self.tmp_rust_src_dir)
+        shutil.copy(os.path.join(root_dir, 'rust', 'src', 'converting_callback_receiver.rs'), self.tmp_rust_src_dir)
+        shutil.copy(os.path.join(root_dir, 'rust', 'src', 'converting_high_level_callback_receiver.rs'), self.tmp_rust_src_dir)
+        shutil.copy(os.path.join(root_dir, 'rust', 'src', 'converting_receiver.rs'), self.tmp_rust_src_dir)
+        shutil.copy(os.path.join(root_dir, 'rust', 'src', 'device.rs'), self.tmp_rust_src_dir)
+        shutil.copy(os.path.join(root_dir, 'rust', 'src', 'error.rs'), self.tmp_rust_src_dir)
+        shutil.copy(os.path.join(root_dir, 'rust', 'src', 'ip_connection.rs'), self.tmp_rust_src_dir)
+        shutil.copy(os.path.join(root_dir, 'rust', 'src', 'lib.rs'), self.tmp_rust_src_dir)
+        shutil.copy(os.path.join(root_dir, 'rust', 'src', 'low_level_traits.rs'), self.tmp_rust_src_dir)
+
+        # Compile source
+        with common.ChangedDirectory(self.tmp_rust_dir):
+            common.execute(['cargo','build'])
+
+
 def generate(root_dir, language, internal):
     common.generate(root_dir, language, internal, JSONZipGenerator)
+
 
 if __name__ == '__main__':
     args = common.dockerize('json', __file__, add_internal_argument=True)
