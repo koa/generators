@@ -1,22 +1,15 @@
 //! Traits for (de)serialization of structs to byte vectors.
-use std::convert::TryInto;
-use std::fmt::{Debug, Formatter};
+use std::{
+    convert::TryInto,
+    fmt::{Debug, Formatter}
+};
 
 use byteorder::{ByteOrder, LittleEndian};
 
-use crate::converting_receiver::BrickletError;
 
 /// A trait to serialize the implementing type to a byte vector.
 pub trait ToBytes {
     fn write_to_slice(self, target: &mut [u8]);
-
-    fn try_write_to_slice(self, _max_len: usize, target: &mut [u8]) -> Result<(), BrickletError>
-    where
-        Self: Sized,
-    {
-        self.write_to_slice(target);
-        Ok(())
-    }
 }
 
 /// A trait to deserialize the implemeting type from a byte slice.
@@ -301,19 +294,6 @@ impl FromByteSlice for char {
 impl ToBytes for String {
     fn write_to_slice(self, target: &mut [u8]) {
         target.copy_from_slice(&self.into_bytes());
-    }
-
-    fn try_write_to_slice(self, max_len: usize, target: &mut [u8]) -> Result<(), BrickletError>
-    where
-        Self: Sized,
-    {
-        let bytes = self.into_bytes();
-        if bytes.len() > max_len {
-            Err(BrickletError::InvalidParameter)
-        } else {
-            target[0..bytes.len()].copy_from_slice(&bytes);
-            Ok(())
-        }
     }
 }
 

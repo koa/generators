@@ -81,9 +81,6 @@ pub mod async_io {
         pub(crate) async fn callback_stream(&mut self, uid: Uid, function_id: u8) -> impl Stream<Item = PacketData> {
             self.inner.borrow_mut().lock().await.callback_stream(uid, function_id).await
         }
-    }
-
-    impl AsyncIpConnection {
         pub async fn new<T: ToSocketAddrs + Debug + Clone + Send + 'static>(addr: T) -> Result<Self, TinkerforgeError> {
             Ok(Self { inner: Arc::new(Mutex::new(InnerAsyncIpConnection::new(addr).await?)) })
         }
@@ -409,7 +406,7 @@ impl ToBytes for PacketHeader {
 /// Type of enumeration of a device.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum EnumerationType {
-    /// Device is available (enumeration triggered by user: [`Enumerate`](crate::ip_connection::IpConnection::enumerate())).
+    /// Device is available (enumeration triggered by user: [`Enumerate`](crate::ip_connection::async_io::AsyncIpConnection::enumerate())).
     /// This enumeration type can occur multiple times for the same device.
     Available,
     /// Device is newly connected (automatically send by Brick after establishing a communication connection).
@@ -470,7 +467,7 @@ impl ToBytes for Version {
 }
 
 /// Devices send `EnumerateResponse`s when they are connected, disconnected or when an enumeration was
-/// triggered by the user using the [`Enumerate`](crate::ip_connection::IpConnection::enumerate) method.
+/// triggered by the user using the [`Enumerate`](crate::ip_connection::async_io::AsyncIpConnection::enumerate()) method.
 #[derive(Copy, Clone, Debug)]
 pub struct EnumerateResponse {
     /// The UID of the device.
@@ -487,15 +484,10 @@ pub struct EnumerateResponse {
     pub hardware_version: Version,
     /// Major, minor and release number for firmware version.
     pub firmware_version: Version,
-    /// A number that represents the device.
+    /// An enum or a number that represents the device.
     /// The device identifier numbers can be found [here](https://www.tinkerforge.com/en/doc/Software/Device_Identifier.html).
-    /// There are also constants for these numbers named following this pattern:
-    ///
-    /// <device-class>.DEVICE_IDENTIFIER
-    ///
-    /// For example: MasterBrick.DEVICE_IDENTIFIER or AmbientLightBricklet.DEVICE_IDENTIFIER.
     pub device_identifier: ParsedOrRaw<DeviceIdentifier, u16>,
-    /// Type of enumeration. See [`EnumerationType`](crate::ip_connection::EnumerationType)
+    /// Type of enumeration. See [`EnumerationType`]
     pub enumeration_type: EnumerationType,
 }
 

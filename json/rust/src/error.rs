@@ -1,6 +1,7 @@
-use crate::converting_receiver::BrickletError;
-use std::array::TryFromSliceError;
-use std::io;
+use std::{
+    array::TryFromSliceError,
+    io
+};
 use thiserror::Error;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
@@ -14,6 +15,4 @@ pub enum TinkerforgeError {
     BroadcastStreamRecvError(#[from] BroadcastStreamRecvError),
     #[error("Cannot extract slice from Packet")]
     PackedDecodingError(#[from] TryFromSliceError),
-    #[error("Legacy Error: {0}")]
-    BrickletError(#[from] BrickletError),
 }

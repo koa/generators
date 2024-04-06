@@ -20,9 +20,6 @@ extern crate core;
 
 pub mod base58;
 pub mod byte_converter;
-pub mod converting_callback_receiver;
-pub mod converting_high_level_callback_receiver;
-pub mod converting_receiver;
 pub mod device;
 pub mod error;
 pub mod ip_connection;

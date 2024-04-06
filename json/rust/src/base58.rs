@@ -1,9 +1,12 @@
 //! Parses Base58 encoded brick and bricklet uids.
-use std::fmt::Debug;
 use std::{
+    fmt::{
+        Debug,
+        Display,
+        Formatter
+    },
     error::Error,
-    fmt::{Display, Formatter},
-    str::FromStr,
+    str::FromStr
 };
 
 use byteorder::{ByteOrder, LittleEndian};
