@@ -18,31 +18,16 @@ exclude = [
 publish = ["kellnr-berg-turbenthal"]
 
 [dependencies]
-byteorder = "1.5.0"
-hmac = "0.12.1"
-rand = "0.8.5"
-rand_chacha = "0.3.1"
-sha-1 = "0.10.1"
-thiserror = "1.0.58"
+tinkerforge-base = { version = "0.1.0", git = "https://github.com/koa/tf-rust-async-generator.git", package = "tinkerforge-base" }
 tokio = { version = "1.37.0", features = ["net", "io-util", "rt-multi-thread", "macros", "sync"] }
 tokio-stream = { version = "0.1.15", features = ["sync"] }
 futures-core = "0.3.30"
-log = "0.4.21"
-prometheus = { version = "0.13.3", optional = true }
-lazy_static = { version = "1.4.0", optional = true }
-serde = { version = "1.0.197", optional = true }
-const-str = "0.5.7"
-socket2 = "0.5.6"
 
 [build-dependencies]
-quote = "1.0.35"
-syn = { version = "2.0.58" }
-convert_case = "0.6.0"
-proc-macro2 = "1.0.79"
+tinkerforge-generator = { version = "0.1.0", git = "https://github.com/koa/tf-rust-async-generator.git", package = "tinkerforge-generator" }
 prettyplease = "0.2.17"
-serde = { version = "1.0.197", features = ["derive"] }
-serde_json = "1.0.115"
 
 [features]
 fail-on-warnings = []
-prometheus = ["dep:prometheus", "dep:lazy_static"]
+prometheus = ["tinkerforge-base/prometheus"]
+serde = ["tinkerforge-base/serde"]

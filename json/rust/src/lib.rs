@@ -12,17 +12,9 @@
 //! Rust API bindings for [Tinkerforge](https://www.tinkerforge.com) bricks and bricklets.
 //! See also the additional documentation and examples [here](https://www.tinkerforge.com/en/doc/Software/API_Bindings_Rust.html)
 pub use crate::bindings::*;
+pub use tinkerforge_base::*;
 
 //#[allow(unused_imports)]
 mod bindings;
 
 extern crate core;
-
-pub mod base58;
-pub mod byte_converter;
-pub mod device;
-pub mod error;
-pub mod ip_connection;
-pub mod low_level_traits;
-
-//mod generator;
