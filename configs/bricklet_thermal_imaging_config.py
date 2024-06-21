@@ -301,20 +301,20 @@ Gibt die Auflösung zurück, wie von :func:`Set Resolution` gesetzt.
 com['packets'].append({
 'type': 'function',
 'name': 'Set Spotmeter Config',
-'elements': [('Region Of Interest', 'uint8', 4, 'in', [{'name': 'First Column', 'range': (0, 79), 'default': 39},
-                                                       {'name': 'First Row', 'range': (0, 59), 'default': 29},
-                                                       {'name': 'Last Column', 'range': (1, 80), 'default': 40},
-                                                       {'name': 'Last Row', 'range': (1, 60), 'default': 30}])],
+'elements': [('Region Of Interest', 'uint8', 4, 'in', [{'name': 'First Column', 'range': (0, 78), 'default': 39},
+                                                       {'name': 'First Row', 'range': (0, 58), 'default': 29},
+                                                       {'name': 'Last Column', 'range': (1, 79), 'default': 40},
+                                                       {'name': 'Last Row', 'range': (1, 59), 'default': 30}])],
 'since_firmware': [1, 0, 0],
 'doc': ['bf', {
 'en':
 """
 Sets the spotmeter region of interest. The 4 values are
 
-* Index 0: Column start (has to be smaller then Column end).
-* Index 1: Row start (has to be smaller then Row end).
-* Index 2: Column end (has to be smaller then 80).
-* Index 3: Row end (has to be smaller then 60).
+* Index 0: Column start (has to be smaller than column end).
+* Index 1: Row start (has to be smaller than row end).
+* Index 2: Column end (has to be smaller than 80).
+* Index 3: Row end (has to be smaller than 60).
 
 The spotmeter statistics can be read out with :func:`Get Statistics`.
 """,
@@ -355,9 +355,9 @@ Gibt die Spotmeter Konfiguration zurück, wie von :func:`Set Spotmeter Config` g
 com['packets'].append({
 'type': 'function',
 'name': 'Set High Contrast Config',
-'elements': [('Region Of Interest', 'uint8', 4, 'in', [{'name': 'First Column', 'range': (0, 78), 'default': 0},
+'elements': [('Region Of Interest', 'uint8', 4, 'in', [{'name': 'First Column', 'range': (0, 79), 'default': 0},
                                                        {'name': 'First Row', 'range': (0, 58), 'default': 0},
-                                                       {'name': 'Last Column', 'range': (1, 79), 'default': 79},
+                                                       {'name': 'Last Column', 'range': (0, 79), 'default': 79},
                                                        {'name': 'Last Row', 'range': (1, 59), 'default': 59}]),
              ('Dampening Factor', 'uint16', 1, 'in', {'range': (0, 256), 'default': 64}),
              ('Clip Limit', 'uint16', 2, 'in', [{'name': 'AGC HEQ Clip Limit High', 'range': (0, 4800), 'default': 4800},
@@ -372,10 +372,10 @@ This config is only used in high contrast mode (see :func:`Set Image Transfer Co
 
 The high contrast region of interest consists of four values:
 
-* Index 0: Column start (has to be smaller or equal then Column end).
-* Index 1: Row start (has to be smaller then Row end).
-* Index 2: Column end (has to be smaller then 80).
-* Index 3: Row end (has to be smaller then 60).
+* Index 0: Column start (has to be smaller than or equal to column end).
+* Index 1: Row start (has to be smaller than row end).
+* Index 2: Column end (has to be smaller than 80).
+* Index 3: Row end (has to be smaller than 60).
 
 The algorithm to generate the high contrast image is applied to this region.
 
@@ -414,10 +414,10 @@ genutzt (siehe :func:`Set Image Transfer Config`).
 
 Die High Contrast Region of Interest besteht aus vier Werten:
 
-* Index 0: Spaltenstart (muss kleiner sein wie Spaltenende).
-* Index 1: Zeilenstart (muss kleiner sein wie Zeilenende).
-* Index 2: Spaltenende (muss kleiner sein wie 80).
-* Index 3: Zeilenende (muss kleiner sein wie 60).
+* Index 0: Spaltenstart (muss kleiner als oder gleich dem Spaltenende sein).
+* Index 1: Zeilenstart (muss kleiner als das Zeilenende sein).
+* Index 2: Spaltenende (muss kleiner als 80 sein).
+* Index 3: Zeilenende (muss kleiner als 60 sein).
 
 Der Algorithmus zum Erzeugen eines High Contrast Images wird auf diese Region angewandt.
 
