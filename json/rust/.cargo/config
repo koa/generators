@@ -1,0 +1,2 @@
+[registries]
+kellnr-berg-turbenthal = { index = "sparse+https://kellnr.berg-turbenthal.ch/api/v1/crates/" }

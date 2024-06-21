@@ -3,7 +3,7 @@ name = "tinkerforge-async"
 version = "{{VERSION}}"
 authors = ["Erik Fleckstein <erik@tinkerforge.com>", "Andreas König <koa@panter.ch>"]
 edition = "2021"
-rust = "1.74.1"
+rust-version = "1.74.1"
 description = "Async Rust API bindings for https://www.tinkerforge.com Bricks and Bricklets, based on Version: 2.0.20"
 license = "CC0-1.0 OR MIT OR Apache-2.0"
 homepage = "https://tinkerforge.com"
@@ -18,13 +18,13 @@ exclude = [
 publish = ["kellnr-berg-turbenthal"]
 
 [dependencies]
-tinkerforge-base = { version = "0.1.0", git = "https://github.com/koa/tf-rust-async-generator.git", package = "tinkerforge-base" }
+tinkerforge-base = { version = "0.1.1", registry = "kellnr-berg-turbenthal", package = "tinkerforge-base" }
 tokio = { version = "1.37.0", features = ["net", "io-util", "rt-multi-thread", "macros", "sync"] }
 tokio-stream = { version = "0.1.15", features = ["sync"] }
 futures-core = "0.3.30"
 
 [build-dependencies]
-tinkerforge-generator = { version = "0.1.0", git = "https://github.com/koa/tf-rust-async-generator.git", package = "tinkerforge-generator" }
+tinkerforge-generator = { version = "0.1.1", registry = "kellnr-berg-turbenthal", package = "tinkerforge-generator" }
 prettyplease = "0.2.17"
 
 [features]

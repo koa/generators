@@ -102,6 +102,7 @@ class JSONZipGenerator(JSONGeneratorTrait, common.ZipGenerator):
         shutil.copy(os.path.join(root_dir, 'rust', 'build.rs'), self.tmp_rust_dir)
         shutil.copy(os.path.join(root_dir, 'rust', 'src', 'bindings.rs'), self.tmp_rust_src_dir)
         shutil.copy(os.path.join(root_dir, 'rust', 'src', 'lib.rs'), self.tmp_rust_src_dir)
+        shutil.copy(os.path.join(root_dir, 'rust', '.cargo', 'config'), self.tmp_rust_src_dir)
 
         # Compile source
         with common.ChangedDirectory(self.tmp_rust_dir):
