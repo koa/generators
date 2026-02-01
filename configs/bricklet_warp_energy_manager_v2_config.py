@@ -12,9 +12,9 @@ com = {
     'author': 'Olaf Lüke <olaf@tinkerforge.com>',
     'api_version': [2, 0, 0],
     'category': 'Bricklet',
-    'device_identifier': 2169,
-    'name': 'WARP Energy Manager',
-    'display_name': 'WARP Energy Manager',
+    'device_identifier': 2178,
+    'name': 'WARP Energy Manager V2',
+    'display_name': 'WARP Energy Manager 2.0',
     'manufacturer': 'Tinkerforge',
     'description': {
         'en': 'TBD',
@@ -23,7 +23,7 @@ com = {
     'released': False,
     'documented': False,
     'discontinued': False,
-    'esp32_firmware': 'energy_manager',
+    'esp32_firmware': 'energy_manager_v2',
     'features': [
         'device',
         'comcu_bricklet',
@@ -87,78 +87,6 @@ com['constant_groups'].append({
 
 com['packets'].append({
 'type': 'function',
-'name': 'Set Contactor',
-'elements': [('Contactor Value', 'bool', 1, 'in', {})],
-'since_firmware': [1, 0, 0],
-'doc': ['bf', {
-'en':
-"""
-TBD
-""",
-'de':
-"""
-TBD
-"""
-}]
-})
-
-com['packets'].append({
-'type': 'function',
-'name': 'Get Contactor',
-'elements': [('Contactor Value', 'bool', 1, 'out', {})],
-'since_firmware': [1, 0, 0],
-'doc': ['bf', {
-'en':
-"""
-TBD
-""",
-'de':
-"""
-TBD
-"""
-}]
-})
-
-com['packets'].append({
-'type': 'function',
-'name': 'Set RGB Value',
-'elements': [('R', 'uint8', 1, 'in', {}),
-             ('G', 'uint8', 1, 'in', {}),
-             ('B', 'uint8', 1, 'in', {})],
-'since_firmware': [1, 0, 0],
-'doc': ['bf', {
-'en':
-"""
-Sets the *r*, *g* and *b* values for the LED.
-""",
-'de':
-"""
-Setzt die *r*, *g* und *b* Werte für die LED.
-"""
-}]
-})
-
-com['packets'].append({
-'type': 'function',
-'name': 'Get RGB Value',
-'elements': [('R', 'uint8', 1, 'out', {}),
-             ('G', 'uint8', 1, 'out', {}),
-             ('B', 'uint8', 1, 'out', {})],
-'since_firmware': [1, 0, 0],
-'doc': ['bf', {
-'en':
-"""
-Returns the *r*, *g* and *b* values of the LED as set by :func:`Set RGB Value`.
-""",
-'de':
-"""
-Gibt die *r*, *g* und *b* Werte der LED zurück, wie von :func:`Set RGB Value` gesetzt.
-"""
-}]
-})
-
-com['packets'].append({
-'type': 'function',
 'name': 'Get Energy Meter Values',
 'elements': [('Power', 'float', 1, 'out'),
              ('Current', 'float', 3, 'out')],
@@ -216,7 +144,7 @@ TODO
 com['packets'].append({
 'type': 'function',
 'name': 'Get Input',
-'elements': [('Input', 'bool', 2, 'out')],
+'elements': [('Input', 'bool', 4, 'out')],
 'since_firmware': [1, 0, 0],
 'doc': ['bf', {
 'en':
@@ -232,8 +160,9 @@ TODO
 
 com['packets'].append({
 'type': 'function',
-'name': 'Set Output',
-'elements': [('Output', 'bool', 1, 'in')],
+'name': 'Set SG Ready Output',
+'elements': [('Index', 'uint8', 1, 'in'),
+             ('Output', 'bool', 1, 'in')],
 'since_firmware': [1, 0, 0],
 'doc': ['bf', {
 'en':
@@ -249,8 +178,43 @@ TODO
 
 com['packets'].append({
 'type': 'function',
-'name': 'Get Output',
-'elements': [('Output', 'bool', 1, 'out')],
+'name': 'Get SG Ready Output',
+'elements': [('Output', 'bool', 2, 'out')],
+'since_firmware': [1, 0, 0],
+'doc': ['bf', {
+'en':
+"""
+TODO
+""",
+'de':
+"""
+TODO
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'function',
+'name': 'Set Relay Output',
+'elements': [('Index', 'uint8', 1, 'in'),
+             ('Output', 'bool', 1, 'in')],
+'since_firmware': [1, 0, 0],
+'doc': ['bf', {
+'en':
+"""
+TODO
+""",
+'de':
+"""
+TODO
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'function',
+'name': 'Get Relay Output',
+'elements': [('Output', 'bool', 2, 'out')],
 'since_firmware': [1, 0, 0],
 'doc': ['bf', {
 'en':
@@ -268,23 +232,6 @@ com['packets'].append({
 'type': 'function',
 'name': 'Get Input Voltage',
 'elements': [('Voltage', 'uint16', 1, 'out', {'scale': (1, 1000), 'unit': 'Volt'})],
-'since_firmware': [1, 0, 0],
-'doc': ['bf', {
-'en':
-"""
-TODO
-""",
-'de':
-"""
-TODO
-"""
-}]
-})
-
-com['packets'].append({
-'type': 'function',
-'name': 'Get State',
-'elements': [('Contactor Check State', 'uint8', 1, 'out')],
 'since_firmware': [1, 0, 0],
 'doc': ['bf', {
 'en':
@@ -318,18 +265,14 @@ TODO
 com['packets'].append({
 'type': 'function',
 'name': 'Get All Data 1',
-'elements': [('Contactor Value', 'bool', 1, 'out', {}),
-             ('R', 'uint8', 1, 'out', {}),
-             ('G', 'uint8', 1, 'out', {}),
-             ('B', 'uint8', 1, 'out', {}),
-             ('Power', 'float', 1, 'out'),
+'elements': [('Power', 'float', 1, 'out'),
              ('Current', 'float', 3, 'out'),
              ('Energy Meter Type', 'uint8', 1, 'out', {'constant_group': 'Energy Meter Type'}),
              ('Error Count', 'uint32', 6, 'out'),
-             ('Input', 'bool', 2, 'out'),
-             ('Output', 'bool', 1, 'out'),
+             ('Input', 'bool', 4, 'out'),
+             ('Output SG Ready', 'bool', 2, 'out'),
+             ('Output Relay', 'bool', 2, 'out'),
              ('Voltage', 'uint16', 1, 'out', {'scale': (1, 1000), 'unit': 'Volt'}),
-             ('Contactor Check State', 'uint8', 1, 'out'),
              ('Uptime', 'uint32', 1, 'out')
 ],
 'since_firmware': [1, 0, 0],
@@ -378,7 +321,7 @@ com['packets'].append({
              ('Day', 'uint8', 1, 'in', {'range': (1, 31)}),
              ('Hour', 'uint8', 1, 'in', {'range': (0, 23)}),
              ('Minute', 'uint8', 1, 'in', {'range': (0, 55)}), # 5 minute interval (0, 5, .., 50, 55)
-             ('Flags', 'uint8', 1, 'in'), # IEC_STATE (bit 0-2) + future use
+             ('Flags', 'uint16', 1, 'in'), # IEC_STATE (bit 0-2) + future use
              ('Power', 'uint16', 1, 'in'), # W
              ('Status', 'uint8', 1, 'out', {'constant_group': 'Data Status'})],
 'since_firmware': [1, 0, 0],
@@ -474,7 +417,7 @@ com['packets'].append({
              ('Day', 'uint8', 1, 'in', {'range': (1, 31)}),
              ('Hour', 'uint8', 1, 'in', {'range': (0, 23)}),
              ('Minute', 'uint8', 1, 'in', {'range': (0, 55)}), # 5 minute interval (0, 5, .., 50, 55)
-             ('Flags', 'uint8', 1, 'in'), #
+             ('Flags', 'uint16', 1, 'in'), #
              ('Power Grid', 'int32', 1, 'in'), # W
              ('Power General', 'int32', 6, 'in'), # W
              ('Price', 'uint32', 1, 'in'),
@@ -610,7 +553,7 @@ com['packets'].append({
 'name': 'SD Energy Manager Data Points Low Level',
 'elements': [('Data Length', 'uint16', 1, 'out', {}),
              ('Data Chunk Offset', 'uint16', 1, 'out', {}),
-             ('Data Chunk Data', 'uint8', 33, 'out', {})],
+             ('Data Chunk Data', 'uint8', 34, 'out', {})],
 'high_level': {'stream_out': {'name': 'Data'}},
 'since_firmware': [1, 0, 0],
 'doc': ['c', {
@@ -709,39 +652,6 @@ TODO
 }]
 })
 
-
-com['packets'].append({
-'type': 'function',
-'name': 'Set LED State',
-'elements': [('Pattern', 'uint8', 1, 'in'),
-             ('Hue', 'uint16', 1, 'in')],
-'since_firmware': [1, 0, 0],
-'doc': ['bf', {
-'en':
-"""
-""",
-'de':
-"""
-"""
-}]
-})
-
-com['packets'].append({
-'type': 'function',
-'name': 'Get LED State',
-'elements': [('Pattern', 'uint8', 1, 'out'),
-             ('Hue', 'uint16', 1, 'out')],
-'since_firmware': [1, 0, 0],
-'doc': ['bf', {
-'en':
-"""
-""",
-'de':
-"""
-"""
-}]
-})
-
 com['packets'].append({
 'type': 'function',
 'name': 'Get Data Storage',
@@ -796,3 +706,4 @@ TODO
 """
 }]
 })
+

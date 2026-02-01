@@ -158,7 +158,8 @@ com['constant_groups'].append({
 'constants': [('Deactivated', 0),
               ('Start Charging', 1),
               ('Stop Charging', 2),
-              ('Start And Stop Charging', 3)]
+              ('Start And Stop Charging', 3),
+              ('Enumerate', 4)]
 })
 
 com['constant_groups'].append({
@@ -179,7 +180,10 @@ com['constant_groups'].append({
               ('SDM72CTM', 4),
               ('SDM630MCTV2', 5),
               ('DSZ15DZMOD', 6),
-              ('DEM4A', 7)]
+              ('DEM4A', 7),
+              ('DMED341MID7ER', 8),
+              ('DSZ16DZE', 9),
+              ('WM3M4C', 10)]
 })
 
 com['constant_groups'].append({
@@ -204,6 +208,140 @@ com['constant_groups'].append({
               ('Active High Max 25A', 16)]
 })
 
+com['constant_groups'].append({
+'name': 'Charging Protocol',
+'type': 'uint8',
+'constants': [('IEC61851', 0),
+              ('ISO15118', 1)]
+})
+
+com['constant_groups'].append({
+'name': 'Eichrecht State',
+'type': 'uint8',
+'constants': [('OK', 0),
+              ('Not All Info Set', 1),
+              ('Busy', 2),
+              ('Not Supported', 3)]
+})
+
+com['constant_groups'].append({
+'name': 'Eichrecht User Assignment Identification Flag',
+'type': 'uint8',
+'constants': [('RFID NONE', 0),
+              ('RFID PLAIN', 1),
+              ('RFID RELATED', 2),
+              ('RFID PSK', 3),
+              ('OCPP NONE', 4),
+              ('OCPP RS', 5),
+              ('OCPP AUTH', 6),
+              ('OCPP RS TLS', 7),
+              ('OCPP AUTH TLS', 8),
+              ('OCPP CACHE', 9),
+              ('OCPP WHITELIST', 10),
+              ('OCPP CERTIFIED', 11),
+              ('ISO15118 NONE', 12),
+              ('ISO15118 PNC', 13),
+              ('PLMN NONE', 14),
+              ('PLMN RING', 15),
+              ('PLMN SMS', 16),
+              ('Not Set', 17)]
+})
+
+com['constant_groups'].append({
+'name': 'Eichrecht User Assignment Identification Type',
+'type': 'uint8',
+'constants': [('NONE', 0),
+              ('DENIED', 1),
+              ('UNDEFINED', 2),
+              ('ISO14443', 3),
+              ('ISO15693', 4),
+              ('EMAID', 5),
+              ('EVCCID', 6),
+              ('EVCOID', 7),
+              ('ISO7812', 8),
+              ('CARD TXN NR', 9),
+              ('CENTRAL', 10),
+              ('CENTRAL 1', 11),
+              ('CENTRAL 2', 12),
+              ('LOCAL', 13),
+              ('LOCAL 1', 14),
+              ('LOCAL 2', 15),
+              ('PHONE NUMBER', 16),
+              ('KEY CODE', 17)]
+})
+
+com['constant_groups'].append({
+'name': 'Eichrecht Charge Point Identification Type',
+'type': 'uint8',
+'constants': [('EVSEID', 0),
+              ('CBIDC', 1)]
+})
+
+com['constant_groups'].append({
+'name': 'Eichrecht Signature Status',
+'type': 'uint16',
+'constants': [('Not Initialised', 0),
+              ('Idle', 1),
+              ('Signature In Progress', 2),
+              ('Signature OK', 15),
+              ('Invalid Date Time', 128),
+              ('Checksum Error', 129),
+              ('Invalid Command', 130),
+              ('Invalid State', 131),
+              ('Invalid Measurement', 132),
+              ('Test Mode Error', 133),
+              ('Verify State Error', 243),
+              ('Signature State Error', 244),
+              ('Keypair Generation', 245),
+              ('SHA Failed', 246),
+              ('Init Failed', 247),
+              ('Data Not Locked', 248),
+              ('Config Not Locked', 249),
+              ('Verify Error', 250),
+              ('Public Key Error', 251),
+              ('Invalid Message Format', 252),
+              ('Invalid Message Size', 253),
+              ('Signature Error', 254),
+              ('Undefined Error', 255)]
+})
+
+com['constant_groups'].append({
+'name': 'Eichrecht Signature Format',
+'type': 'uint16',
+'constants': [('ASN1', 0),
+              ('Base64', 1)]
+})
+
+com['constant_groups'].append({
+'name': 'Eichrecht Measurement Status',
+'type': 'uint16',
+'constants': [('Idle', 0),
+              ('Active', 1),
+              ('Active After Power Failure', 2),
+              ('Active After Reset', 3),
+              ('Invalid Date Time', 128)]
+})
+
+com['constant_groups'].append({
+'name': 'Eichrecht Transaction Command',
+'type': 'char',
+'constants': [('Begin', 'B'),
+              ('End', 'E'),
+              ('Intermediate', 'C'),
+              ('Exception', 'X'),
+              ('Tariff Change', 'T'),
+              ('Suspended', 'S'),
+              ('End With Begin', 'r'),
+              ('Fiscal Reading', 'f'),
+              ('Hold Command', 'h'),
+              ('Last Charge Reading', 'i')]
+})
+
+com['constant_groups'].append({
+'name': 'Phase Switch Wait Time',
+'type': 'uint8',
+'constants': [('Default', 0)] + [(f'{15 + i * 5} Seconds', i + 1) for i in range(22)] # Default + 15s to 120s in 5s steps
+})
 
 """
 contactor state
@@ -319,7 +457,7 @@ com['packets'].append({
              ('Voltages', 'int16', 7, 'out', {'scale': (1, 1000), 'unit': 'Volt'}), # CP/PE before resistor (PWM high), CP/PE after resistor (PWM high), CP/PE before resistor (PWM low), CP/PE after resistor (PWM low), PP/PE, +12V rail, -12V rail
              ('Resistances', 'uint32', 2, 'out', {'unit': 'Ohm'}), # CP/PE resistance, PP/PE resistance
              ('GPIO', 'bool', 24, 'out'), # TODO, all I/O (20 for now)
-             ('Charging Time', 'uint32', 1, 'out', {'scale': (1, 1000), 'unit': 'Second'}),
+             ('Car Stopped Charging', 'bool', 1, 'out'),
              ('Time Since State Change', 'uint32', 1, 'out', {'scale': (1, 1000), 'unit': 'Second'}),
              ('Time Since DC Fault Check', 'uint32', 1, 'out', {'scale': (1, 1000), 'unit': 'Second'}),
              ('Uptime', 'uint32', 1, 'out', {'scale': (1, 1000), 'unit': 'Second'})],
@@ -526,9 +664,10 @@ TODO
 com['packets'].append({
 'type': 'function',
 'name': 'Get All Energy Meter Values Low Level',
-'elements': [('Values Chunk Offset', 'uint16', 1, 'out', {}),
+'elements': [('Values Length', 'uint16', 1, 'out', {}),
+             ('Values Chunk Offset', 'uint16', 1, 'out', {}),
              ('Values Chunk Data', 'float', 15, 'out', {})],
-'high_level': {'stream_out': {'name': 'Values', 'fixed_length': 88}},
+'high_level': {'stream_out': {'name': 'Values'}},
 'since_firmware': [1, 0, 0],
 'doc': ['bf', {
 'en':
@@ -894,6 +1033,9 @@ com['packets'].append({
              ('Phases Info', 'uint8', 1, 'out'),
              ('Phase Auto Switch Enabled', 'bool', 1, 'out'),
              ('Phases Connected', 'uint8', 1, 'out'), # 1 or 3, Ignored in EVSE V2
+             ('Enumerate Value', 'uint8', 1, 'out'), # Returns new value if stable for > 2 seconds
+             ('Enumerate Value Change Time', 'uint32', 1, 'out'), # EVSE uptime of last value change
+             ('Phase Switch Wait Time', 'uint8', 1, 'out', {'constant_group': 'Phase Switch Wait Time'}),
 ],
 'since_firmware': [1, 0, 0],
 'doc': ['bf', {
@@ -1144,6 +1286,397 @@ com['packets'].append({
              ('Phases Connected', 'bool', 3, 'out')],
 'since_firmware': [1, 0, 0],
 'doc': ['c', {
+'en':
+"""
+TODO
+""",
+'de':
+"""
+TODO
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'function',
+'name': 'Set Charging Protocol',
+'elements': [('Charging Protocol', 'uint8', 1, 'in', {'constant_group': 'Charging Protocol'}),
+             ('CP Duty Cycle', 'uint16', 1, 'in')], # Only used when protocol is ISO15118, only 50 (5%) and 1000 (100%) are accepted
+'since_firmware': [1, 0, 0],
+'doc': ['bf', {
+'en':
+"""
+TODO
+""",
+'de':
+"""
+TODO
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'function',
+'name': 'Get Charging Protocol',
+'elements': [('Charging Protocol', 'uint8', 1, 'out', {'constant_group': 'Charging Protocol'}),
+             ('CP Duty Cycle', 'uint16', 1, 'out')], # Only used when protocol is ISO15118, only 50 (5%) and 1000 (100%) are accepted
+'since_firmware': [1, 0, 0],
+'doc': ['bf', {
+'en':
+"""
+TODO
+""",
+'de':
+"""
+TODO
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'function',
+'name': 'Set Eichrecht Gateway Identification',
+'elements': [('Gateway Identification', 'char', 41, 'in'), # GI
+             ('Eichrecht State', 'uint8', 1, 'out', {'constant_group': 'Eichrecht State'})],
+'since_firmware': [1, 0, 0],
+'doc': ['bf', {
+'en':
+"""
+TODO
+""",
+'de':
+"""
+TODO
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'function',
+'name': 'Get Eichrecht Gateway Identification',
+'elements': [('Gateway Identification', 'char', 41, 'out')], # GI
+'since_firmware': [1, 0, 0],
+'doc': ['bf', {
+'en':
+"""
+TODO
+""",
+'de':
+"""
+TODO
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'function',
+'name': 'Set Eichrecht Gateway Serial',
+'elements': [('Gateway Serial', 'char', 25, 'in'), # GS
+             ('Eichrecht State', 'uint8', 1, 'out', {'constant_group': 'Eichrecht State'})],
+'since_firmware': [1, 0, 0],
+'doc': ['bf', {
+'en':
+"""
+TODO
+""",
+'de':
+"""
+TODO
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'function',
+'name': 'Get Eichrecht Gateway Serial',
+'elements': [('Gateway Serial', 'char', 25, 'out')], # GS
+'since_firmware': [1, 0, 0],
+'doc': ['bf', {
+'en':
+"""
+TODO
+""",
+'de':
+"""
+TODO
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'function',
+'name': 'Set Eichrecht User Assignment',
+'elements': [('Identification Status', 'bool', 1, 'in'), # IS
+             ('Identification Flags', 'uint8', 4, 'in', {'constant_group': 'Eichrecht User Assignment Identification Flag'}), # IF
+             ('Identification Type', 'uint8', 1, 'in', {'constant_group': 'Eichrecht User Assignment Identification Type'}), # IT
+             ('Identification Data', 'char', 40, 'in'), # ID
+             ('Eichrecht State', 'uint8', 1, 'out', {'constant_group': 'Eichrecht State'})],
+'since_firmware': [1, 0, 0],
+'doc': ['bf', {
+'en':
+"""
+TODO
+""",
+'de':
+"""
+TODO
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'function',
+'name': 'Get Eichrecht User Assignment',
+'elements': [('Identification Status', 'bool', 1, 'out'), # IS
+             ('Identification Flags', 'uint8', 4, 'out', {'constant_group': 'Eichrecht User Assignment Identification Flag'}), # IF
+             ('Identification Type', 'uint8', 1, 'out', {'constant_group': 'Eichrecht User Assignment Identification Type'}), # IT
+             ('Identification Data', 'char', 40, 'out')], # ID
+'since_firmware': [1, 0, 0],
+'doc': ['bf', {
+'en':
+"""
+TODO
+""",
+'de':
+"""
+TODO
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'function',
+'name': 'Set Eichrecht Charge Point',
+'elements': [('Identification Type', 'uint8', 1, 'in', {'constant_group': 'Eichrecht Charge Point Identification Type'}), # CT
+             ('Identification', 'char', 20, 'in'), # CI
+             ('Eichrecht State', 'uint8', 1, 'out', {'constant_group': 'Eichrecht State'})],
+'since_firmware': [1, 0, 0],
+'doc': ['bf', {
+'en':
+"""
+TODO
+""",
+'de':
+"""
+TODO
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'function',
+'name': 'Get Eichrecht Charge Point',
+'elements': [('Identification Type', 'uint8', 1, 'out', {'constant_group': 'Eichrecht Charge Point Identification Type'}), # CT
+             ('Identification', 'char', 20, 'out')], # CI
+'since_firmware': [1, 0, 0],
+'doc': ['bf', {
+'en':
+"""
+TODO
+""",
+'de':
+"""
+TODO
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'function',
+'name': 'Set Eichrecht Transaction',
+'elements': [('Transaction', 'char', 1, 'in', {'constant_group': 'Eichrecht Transaction Command'}),
+             ('Unix Time', 'uint32', 1, 'in'), # Seconds, Iskra uses uint32 for unix time instead of standard int32, so it goes to the year 2106... good enough.
+             ('UTC Time Offset', 'int16', 1, 'in', {'range': (-719, 720)}), # Minutes
+             ('Signature Format', 'uint16', 1, 'in', {'constant_group': 'Eichrecht Signature Format'}),
+             ('Eichrecht State', 'uint8', 1, 'out', {'constant_group': 'Eichrecht State'})],
+'since_firmware': [1, 0, 0],
+'doc': ['bf', {
+'en':
+"""
+TODO
+""",
+'de':
+"""
+TODO
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'function',
+'name': 'Get Eichrecht Transaction',
+'elements': [('Transaction', 'char', 1, 'out', {'constant_group': 'Eichrecht Transaction Command'}),
+             ('Transaction State', 'uint8', 1, 'out'),
+             ('Transaction Inner State', 'uint8', 1, 'out'),
+             ('Measurement Status', 'uint16', 1, 'out', {'constant_group': 'Eichrecht Measurement Status'}),
+             ('Signature Status', 'uint16', 1, 'out', {'constant_group': 'Eichrecht Signature Status'}),
+             ('Eichrecht State', 'uint8', 1, 'out', {'constant_group': 'Eichrecht State'})],
+'since_firmware': [1, 0, 0],
+'doc': ['bf', {
+'en':
+"""
+TODO
+""",
+'de':
+"""
+TODO
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'function',
+'name': 'Get Eichrecht Public Key',
+'elements': [('Public Key', 'uint8', 64, 'out', {})],
+'since_firmware': [1, 0, 0],
+'doc': ['c', {
+'en':
+"""
+TODO
+""",
+'de':
+"""
+TODO
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'callback',
+'name': 'Eichrecht Dataset Low Level',
+'elements': [('Message Length', 'uint16', 1, 'out', {}),
+             ('Message Chunk Offset', 'uint16', 1, 'out', {}),
+             ('Message Chunk Data', 'char', 60, 'out', {})],
+'high_level': {'stream_out': {'name': 'Message'}},
+'since_firmware': [1, 0, 0],
+'doc': ['c', {
+'en':
+"""
+TODO
+""",
+'de':
+"""
+TODO
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'callback',
+'name': 'Eichrecht Signature Low Level',
+'elements': [('Message Length', 'uint16', 1, 'out', {}),
+             ('Message Chunk Offset', 'uint16', 1, 'out', {}),
+             ('Message Chunk Data', 'char', 60, 'out', {})],
+'high_level': {'stream_out': {'name': 'Message'}},
+'since_firmware': [1, 0, 0],
+'doc': ['c', {
+'en':
+"""
+TODO
+""",
+'de':
+"""
+TODO
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'function',
+'name': 'Set Enumerate Configuration',
+'elements': [('Enumerator H', 'uint16', 8, 'in'), # HSV Hue; ignore entries == 0 starting at end
+             ('Enumerator S', 'uint8', 8, 'in'),  # HSV Hue; ignore entries == 0 starting at end
+             ('Enumerator V', 'uint8', 8, 'in')], # HSV Hue; ignore entries == 0 starting at end
+'since_firmware': [1, 0, 0],
+'doc': ['bf', {
+'en':
+"""
+TODO
+""",
+'de':
+"""
+TODO
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'function',
+'name': 'Get Enumerate Configuration',
+'elements': [('Enumerator H', 'uint16', 8, 'out'), # HSV Hue; ignore entries == 0 starting at end
+             ('Enumerator S', 'uint8', 8, 'out'),  # HSV Hue; ignore entries == 0 starting at end
+             ('Enumerator V', 'uint8', 8, 'out')], # HSV Hue; ignore entries == 0 starting at end
+'since_firmware': [1, 0, 0],
+'doc': ['bf', {
+'en':
+"""
+TODO
+""",
+'de':
+"""
+TODO
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'function',
+'name': 'Set Enumerate Value',
+'elements': [('Value', 'uint8', 1, 'in')], # Sets enumerate value immediately
+'since_firmware': [1, 0, 0],
+'doc': ['bf', {
+'en':
+"""
+TODO
+""",
+'de':
+"""
+TODO
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'function',
+'name': 'Get Enumerate Value',
+'elements': [('Value', 'uint8', 1, 'out'), # Returns new value if stable for > 2 seconds
+             ('Value Change Time', 'uint32', 1, 'out')], # EVSE uptime of last value change
+'since_firmware': [1, 0, 0],
+'doc': ['bf', {
+'en':
+"""
+TODO
+""",
+'de':
+"""
+TODO
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'function',
+'name': 'Set Phase Switch Wait Time',
+'elements': [('Phase Switch Wait Time', 'uint8', 1, 'in', {'constant_group': 'Phase Switch Wait Time'})],
+'since_firmware': [1, 0, 0],
+'doc': ['bf', {
+'en':
+"""
+TODO
+""",
+'de':
+"""
+TODO
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'function',
+'name': 'Get Phase Switch Wait Time',
+'elements': [('Phase Switch Wait Time', 'uint8', 1, 'out', {'constant_group': 'Phase Switch Wait Time'})],
+'since_firmware': [1, 0, 0],
+'doc': ['bf', {
 'en':
 """
 TODO

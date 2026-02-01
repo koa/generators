@@ -10,7 +10,7 @@ from generators.configs.openhab_commonconfig import *
 
 com = {
     'author': 'Olaf Lüke <olaf@tinkerforge.com>',
-    'api_version': [2, 0, 2],
+    'api_version': [2, 0, 3],
     'category': 'Bricklet',
     'device_identifier': 286,
     'name': 'NFC',
@@ -50,7 +50,9 @@ com['constant_groups'].append({
               ('Type1', 1),
               ('Type2', 2),
               ('Type3', 3),
-              ('Type4', 4)]
+              ('Type4', 4),
+              ('Type5', 5),
+              ('Phone', 6)]
 })
 
 STATE_IDLE_MASK = (1 << 7)
@@ -288,6 +290,7 @@ Aktuell werden die folgenden Tag Typen unterstützt:
 * NFC Forum Type 2
 * NFC Forum Type 3
 * NFC Forum Type 4
+* NFC Forum Type 5
 
 Beim Aufruf von :func:`Reader Request Tag ID` versucht das NFC Bricklet die Tag ID
 eines Tags auszulesen. Nachdem dieser Prozess beendet ist ändert sich
@@ -416,7 +419,7 @@ com['packets'].append({
 """
 Writes NDEF formated data.
 
-This function currently supports NFC Forum Type 2 and 4.
+This function currently supports NFC Forum Type 2, 4, 5 and Mifare Classic.
 
 The general approach for writing a NDEF message is as follows:
 
@@ -433,7 +436,7 @@ The general approach for writing a NDEF message is as follows:
 """
 Schreibt NDEF formatierte Daten.
 
-Diese Funktion unterstützt aktuell NFC Forum Type 2 und 4.
+Diese Funktion unterstützt aktuell NFC Forum Type 2, 4, 5 und Mifare Classic.
 
 Der Ansatz um eine NDEF Nachricht zu schreiben sieht wie folgt aus:
 
@@ -460,7 +463,7 @@ com['packets'].append({
 """
 Reads NDEF formated data from a tag.
 
-This function currently supports NFC Forum Type 1, 2, 3 and 4.
+This function currently supports NFC Forum Type 1, 2, 3, 4, 5 and Mifare Classic.
 
 The general approach for reading a NDEF message is as follows:
 
@@ -478,7 +481,7 @@ The general approach for reading a NDEF message is as follows:
 """
 Liest NDEF formatierten Daten von einem Tag.
 
-Diese Funktion unterstützt aktuell NFC Forum Type 1, 2, 3 und 4.
+Diese Funktion unterstützt aktuell NFC Forum Type 1, 2, 3, 4, 5 and Mifare Classic.
 
 Der Ansatz um eine NDEF Nachricht zu lesen sieht wie folgt aus:
 
@@ -601,6 +604,7 @@ depends on the tag type. The page sizes are as follows:
 * NFC Forum Type 2 page size: 4 byte
 * NFC Forum Type 3 page size: 16 byte
 * NFC Forum Type 4: No pages, page = file selection (CC or NDEF, see below)
+* NFC Forum Type 5 page size: 4 byte
 
 The general approach for writing to a tag is as follows:
 
@@ -632,6 +636,7 @@ verhalten sich wie folgt:
 * NFC Forum Type 2 Pagegröße: 4 byte
 * NFC Forum Type 3 Pagegröße: 16 byte
 * NFC Forum Type 4: Keine Pages, Page = Dateiwahl (CC oder NDEF, siehe unten)
+* NFC Forum Type 5 Pagegröße: 4 byte
 
 Der generelle Ansatz zum Schreiben eines Tags sieht wie folgt aus:
 
@@ -676,6 +681,7 @@ as follows:
 * NFC Forum Type 2 page size: 4 byte
 * NFC Forum Type 3 page size: 16 byte
 * NFC Forum Type 4: No pages, page = file selection (CC or NDEF, see below)
+* NFC Forum Type 5 page size: 4 byte
 
 The general approach for reading a tag is as follows:
 
@@ -709,6 +715,7 @@ Die Pagegrößen verhalten sich wie folgt:
 * NFC Forum Type 2 Pagegröße: 4 byte
 * NFC Forum Type 3 Pagegröße: 16 byte
 * NFC Forum Type 4: Keine Pages, Page = Dateiwahl (CC oder NDEF, siehe unten)
+* NFC Forum Type 5 Pagegröße: 4 byte
 
 Der generelle Ansatz zum Lesen eines Tags sieht wie folgt aus:
 
@@ -1276,25 +1283,68 @@ Gibt das Timeout zurück, wie von :func:`Set Maximum Timeout` gesetzt.
 com['packets'].append({
 'type': 'function',
 'name': 'Simple Get Tag ID Low Level',
-'elements': [('Index', 'uint8', 1, 'in'),
+'elements': [('Index', 'uint8', 1, 'in', {'range': (0, 7)}),
              ('Tag Type', 'uint8', 1, 'out', {'constant_group': 'Tag Type'}),
              ('Tag ID Length', 'uint8', 1, 'out', {'range': (0, 10)}),
              ('Tag ID Data', 'uint8', 10, 'out', {}),
-             ('Last Seen', 'uint32', 1, 'out')],
+             ('Last Seen', 'uint32', 1, 'out', {'scale': (1, 1000), 'unit': 'Second'})],
 'high_level': {'stream_out': {'name': 'Tag ID', 'single_chunk': True}},
 'since_firmware': [2, 0, 6],
 'doc': ['bf', {
 'en':
 """
+Returns the tag type and tag ID from simple mode sorted by last seen time for a given index.
 
+Up to eight tags are saved.
 """,
 'de':
 """
+Gibt den Tag Typ und die Tag ID des Simple-Mode sortiert nach `last_seen` für den gegebenen Index zurück.
 
+Bis zu acht Tags werden gespeichert.
 """
 }]
 })
 
+com['packets'].append({
+'type': 'function',
+'name': 'Cardemu Set Tag ID',
+'elements': [('Tag ID Length', 'uint8', 1, 'in', {'range': (0, 7)}),
+             ('Tag ID Data', 'uint8', 7, 'in')],
+'since_firmware': [2, 1, 0],
+'doc': ['bf', {
+'en':
+"""
+Sets the tag ID for cardemu mode. The tag ID can either have a length of 4 or 7.
+
+Set a length of 0 for random tag ID (default)
+""",
+'de':
+"""
+Setzt die Tag ID für den Caremu-Modus. Die Tag ID kann entweder eine Länge von 4 oder von 7 haben.
+
+Wrid die Länge auf 0 gesetzt, nutzt das Bricklet eine zufällige Tag ID (Default).
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'function',
+'name': 'Cardemu Get Tag ID',
+'elements': [('Tag ID Length', 'uint8', 1, 'out', {'range': (0, 7)}),
+             ('Tag ID Data', 'uint8', 7, 'out')],
+'since_firmware': [2, 1, 0],
+'doc': ['bf', {
+'en':
+"""
+Returns the tag ID and length as set by :func:`Cardemu Set Tag ID`.
+""",
+'de':
+"""
+Gibt die Tag ID und Länge zurück, wie von :func:`Cardemu Set Tag ID` gesetzt.
+"""
+}]
+})
 
 com['examples'].append({
 'name': 'Scan For Tags',

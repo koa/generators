@@ -122,7 +122,7 @@ class UCExamplesTester(common.Tester):
             files = output.splitlines()
 
             if len(files) > 0:
-                args = ['sed', '-e', '/typedef enum/,/\}/!d'] + files
+                args = ['sed', '-e', r'/typedef enum/,/\}/!d'] + files
                 _, output = common.check_output_and_error(args)
                 for l in output.splitlines():
                     l = l.strip()
@@ -180,9 +180,9 @@ class UCExamplesTester(common.Tester):
         elif self.compiler == 'mingw32-g++':
             args += ['x86_64-w64-mingw32-g++', '-DTF_NET_ENABLE=1', '-Wall', '-Wextra']
         elif self.compiler == 'clang':
-            args += ['clang', '-std=c99', '-DTF_NET_ENABLE=1', '-Weverything', '-Wno-padded', '-Wno-declaration-after-statement']
+            args += ['clang', '-std=c99', '-DTF_NET_ENABLE=1', '-Weverything', '-Wno-padded', '-Wno-declaration-after-statement', '-Wno-unsafe-buffer-usage']
         elif self.compiler == 'clang++':
-            args += ['clang++', '-std=c++98', '-DTF_NET_ENABLE=1', '-Weverything', '-Wno-padded', '-Wno-deprecated', '-Wno-variadic-macros', '-Wno-old-style-cast', '-Wno-c++20-designator']
+            args += ['clang++', '-std=c++98', '-DTF_NET_ENABLE=1', '-Weverything', '-Wno-padded', '-Wno-deprecated', '-Wno-variadic-macros', '-Wno-old-style-cast', '-Wno-c++20-designator', '-Wno-unsafe-buffer-usage']
         elif self.compiler == 'scan-build clang':
             args += ['scan-build', 'clang', '-DTF_NET_ENABLE=1', '-std=c99']
         else:
@@ -206,6 +206,7 @@ class UCExamplesTester(common.Tester):
                  os.path.join(tmp_dir, 'src/bindings/streaming.c'),
                  os.path.join(tmp_dir, 'src/bindings/tfp.c'),
                  os.path.join(tmp_dir, 'src/bindings/tfp_header.c'),
+                 os.path.join(tmp_dir, 'src/bindings/display_names.c'),
                  os.path.join(tmp_dir, 'src/hal_null/hal_null.c'),
                  os.path.join(tmp_dir, 'src/hal_null/example_driver.c'),
                  os.path.join(tmp_dir, 'src/net_null/net_null.c'),]

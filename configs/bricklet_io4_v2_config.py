@@ -10,7 +10,7 @@ from generators.configs.openhab_commonconfig import *
 
 com = {
     'author': 'Olaf Lüke <olaf@tinkerforge.com>',
-    'api_version': [2, 0, 0],
+    'api_version': [2, 0, 1],
     'category': 'Bricklet',
     'device_identifier': 2111,
     'name': 'IO4 V2',
@@ -648,6 +648,72 @@ This callback is triggered whenever a monoflop timer reaches 0. The
 Dieser Callback wird ausgelöst, wenn ein Monoflop Timer abläuft (0 erreicht).
 :word:`parameters` enthalten den Kanal und den aktuellen
 Zustand des Kanals (der Zustand nach dem Monoflop).
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'function',
+'name': 'Set Capture Input Callback Configuration',
+'elements': [('Enable', 'bool', 1, 'in'),
+             ('Time Between Capture', 'uint16', 1, 'in', {'scale': (1, 1000*1000), 'unit': 'Second', 'range': (20, 0xFFFF), 'default': 50})],
+'since_firmware': [2, 0, 5],
+'doc': ['ccf', {
+'en':
+"""
+If `enable` is set to true, the :cb:`Capture Input` callback is started. The sample frequency is given with the `time between capture` parameter (in us).
+For example: A time between capture of 50us corresponds to a sampling frequency of 20kHz. The maximum sampling frquency is 50kHz.
+
+Note: When the :cb:`Capture Input` callback is activated, all other functions of the IO-4 Bricklet 2.0 stop working.
+""",
+'de':
+"""
+Wenn `enable` auf true gesetzt ist, wird der Callback :cb:`Capture Input` gestartet. Die Abtastfrequenz wird über den Parameter `time between capture` (in µs) festgelegt.
+Zum Beispiel: Eine Konfiguration von 50 µs entspricht einer Abtastfrequenz von 20 kHz. Die maximale Abtastfrequenz beträgt 50 kHz.
+
+Hinweis: Wenn der :cb:`Capture Input`-Callback aktiviert ist, funktionieren alle anderen Funktionen des IO-4 Bricklet 2.0 nicht mehr.
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'function',
+'name': 'Get Capture Input Callback Configuration',
+'elements': [('Enable', 'bool', 1, 'out'),
+             ('Time Between Capture', 'uint16', 1, 'out', {'scale': (1, 1000*1000), 'unit': 'Second', 'range': (20, 0xFFFF), 'default': 50})],
+'since_firmware': [2, 0, 5],
+'doc': ['ccf', {
+'en':
+"""
+Returns the callback configuration as set by
+:func:`Set Capture Input Callback Configuration`.
+""",
+'de':
+"""
+Gibt die Callback-Konfiguration zurück, wie mittels
+:func:`Set Capture Input Callback Configuration` gesetzt.
+"""
+}]
+})
+
+com['packets'].append({
+'type': 'callback',
+'name': 'Capture Input',
+'elements': [('Data', 'uint8', 64, 'out')],
+'since_firmware': [2, 0, 5],
+'doc': ['c', {
+'en':
+"""
+Returns a stream of IO-4 inputs encoded as bitmasks. There are two samples per 8 bit (i.e. 128 samples per callback). Each sample has a time distance as defined by :func:`Set Capture Input Callback Configuration`.
+
+The data starts to stream when the callback is enabled and stops after it is disabled again.
+""",
+'de':
+"""
+Gibt einen Stream der IO-4-Eingangszustände zurück, die als Bitmaske kodiert sind. Es gibt zwei Abtastwerte pro 8-Bit Wert (also 128 Zustände pro Callback).
+Der zeitliche Abstand der Abtastwerte wird per :func:`Set Capture Input Callback Configuration` definiert.
+
+Die Daten beginnen zu streamen, sobald der Callback aktiviert ist, und stoppen, sobald er wieder deaktiviert wird.
 """
 }]
 })

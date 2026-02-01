@@ -8,11 +8,12 @@
 
 #include "net_arduino_esp32.h"
 
-#include <Arduino.h>
+#include <algorithm>
 #include <lwip/err.h>
 #include <lwip/sockets.h>
 #include <lwip/sys.h>
 #include <lwip/netdb.h>
+#include <mbedtls/md.h>
 #include <string.h>
 #include <esp_wifi.h>
 #include <esp_random.h>
@@ -20,7 +21,6 @@
 #include "../bindings/macros.h"
 #include "../bindings/hal_common.h"
 #include "../bindings/errors.h"
-#include "hmac.h"
 
 static void remove_open_request(TF_Net *net, size_t idx) {
     memmove(net->open_requests + idx, net->open_requests + idx + 1, sizeof(TF_Request) * (net->open_request_count - idx - 1));
@@ -131,11 +131,11 @@ static int server_accept(int server_fd) {
 }
 
 static uint32_t tf_net_current_time_us(TF_Net *net) {
-    return micros();
+    return esp_timer_get_time();
 }
 
 static uint32_t tf_net_current_time_ms(TF_Net *net) {
-    return millis();
+    return esp_timer_get_time() / 1000;
 }
 
 static void remove_client(TF_Net *net, uint32_t client_idx) {
@@ -311,8 +311,6 @@ static int accept_connections(TF_Net *net) {
     clients[insert_idx].send_buf_used = 0;
     ++net->clients_used;
 
-    printf("clients used: %d\n", net->clients_used);
-
     if (net->clients_used == max_clients) {
         // We already have the maximum amount of clients, don't accept more.
         close(net->server_fd);
@@ -331,7 +329,7 @@ static int accept_connections(TF_Net *net) {
 }*/
 
 static void drop_packet(TF_NetClient *client, uint8_t len) {
-    len = MIN(len, client->read_buf_used);
+    len = std::min(len, client->read_buf_used);
     memmove(client->read_buf, client->read_buf + len, client->read_buf_used - len);
     client->read_buf_used -= len;
     client->available_packet_valid = false;
@@ -398,6 +396,8 @@ static void handle_get_authentication_nonce_request(TF_Net *net, uint8_t client_
     }
 }
 
+static const size_t SHA1_DIGEST_LENGTH = 20;
+
 static void handle_authenticate_request(TF_Net *net, uint8_t client_id, TF_TFPHeader *header, uint8_t *buf) {
     TF_NetClient *client = &net->clients[client_id];
 
@@ -417,15 +417,21 @@ static void handle_authenticate_request(TF_Net *net, uint8_t client_id, TF_TFPHe
     buf_read_ptr += TF_TFP_HEADER_LENGTH;
 
     uint32_t nonces[2];
-    uint8_t digest[TF_SHA1_DIGEST_LENGTH];
+    uint8_t digest[SHA1_DIGEST_LENGTH];
     memcpy(&nonces[0], &client->auth_nonce, sizeof(uint32_t));
     memcpy(&nonces[1], buf_read_ptr, sizeof(uint32_t));
     buf_read_ptr += sizeof(uint32_t);
 
-    tf_hmac_sha1((const uint8_t *)net->auth_secret, strlen(net->auth_secret),
-                 (const uint8_t *)nonces, sizeof(nonces), digest);
+    if (mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA1),
+                        (const uint8_t *)net->auth_secret, strlen(net->auth_secret),
+                        (const uint8_t *)nonces, sizeof(nonces),
+                        digest) != 0) {
+        tf_hal_log_info("Authenticate request check failed. Disconnecting client\n");
+        remove_client(net, client_id);
+        return;
+    }
 
-    if (memcmp(buf_read_ptr, digest, TF_SHA1_DIGEST_LENGTH) != 0) {
+    if (memcmp(buf_read_ptr, digest, SHA1_DIGEST_LENGTH) != 0) {
         tf_hal_log_info("Authenticate request from client did not contain the expected data. Disconnecting client\n");
         remove_client(net, client_id);
         return;
