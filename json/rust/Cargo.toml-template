@@ -18,13 +18,13 @@ exclude = [
 publish = ["kellnr-berg-turbenthal"]
 
 [dependencies]
-tinkerforge-base = { version = "0.1.3", registry = "kellnr-berg-turbenthal", package = "tinkerforge-base" }
+tinkerforge-base = { version = "0.1.4", registry = "kellnr-berg-turbenthal", package = "tinkerforge-base" }
 tokio = { version = "1.37.0", features = ["net", "io-util", "rt-multi-thread", "macros", "sync"] }
 tokio-stream = { version = "0.1.15", features = ["sync"] }
 futures-core = "0.3.30"
 
 [build-dependencies]
-tinkerforge-generator = { version = "0.1.3", registry = "kellnr-berg-turbenthal", package = "tinkerforge-generator" }
+tinkerforge-generator = { version = "0.1.4", registry = "kellnr-berg-turbenthal", package = "tinkerforge-generator" }
 prettyplease = "0.2.17"
 
 [features]
